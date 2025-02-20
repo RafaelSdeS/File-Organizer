@@ -4,8 +4,11 @@ from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 from collections import Counter
 import os
-import PyPDF2
 import numpy as np
+
+from .utils import create_weighted_text, read_file
+
+readable_files = [".pdf"] #, ".txt", ".docx", ".xml"
 
 class DocumentAnalyzer:
 
@@ -23,25 +26,20 @@ class DocumentAnalyzer:
 
         files_data = []
 
-        readable_files = [".pdf", ".txt", ".docx", ".xml"]
-        
-        for file_path in os.listdir(path):
-            if not os.path.isfile(file_path):
-                file_data = {
-                    "Path": file_path,
-                    "Content": None
-                }
+        for file_path in os.scandir(path):
+            if not file_path.is_file():
+                file_data = self._analyze_folder(file_path)
             else:
                 _, ext = os.path.splitext(file_path)
                 if ext in readable_files:
-                    content = self._read_file(os.path.join(path, file_path))
+                    content = read_file(os.path.join(path, file_path))
                     file_data = {
-                        "Path": file_path,
+                        "Path": file_path.name,
                         "Content": content
                     }
                 else:
                     file_data = {
-                        "Path": file_path,
+                        "Path": file_path.name,
                         "Content": None
                     }
             files_data.append(file_data)
@@ -50,7 +48,7 @@ class DocumentAnalyzer:
         
         # Create weighted text combining path and content
         df["Text"] = df.apply(
-            lambda row: self._create_weighted_text(
+            lambda row: create_weighted_text(
                 row["Path"],
                 row["Content"],
                 path_weight=2
@@ -75,46 +73,25 @@ class DocumentAnalyzer:
         # Organize files into clusters
         return self._organize_clusters(df)
     
-    def _read_file(self, file_path):
-        try:
-            with open(file_path, 'rb') as file:
-                reader = PyPDF2.PdfReader(file)
-                text = ""
-                for page in reader.pages:
-                    text += page.extract_text()
-                # Optimize text length based on content analysis
-                return text[:self._analyze_document_content(text)]
-        except Exception as e:
-            print(f"Error reading file {file_path}: {e}")
-            return None
-    
-    def _analyze_document_content(self, text):
-        """
-        Analyzes document content to determine optimal text extraction length.
-        The length is calculated based on:
-        - Number of sections (paragraph breaks)
-        - Number of keywords (words > 5 characters)
-        """
-        if not text:
-            return 1000  # Default minimum length
-            
-        # Count content indicators
-        section_markers = text.count('\n\n') + text.count('. ') + text.count(' ')
-        keywords = len([word for word in text.split() if len(word) > 5])
-        
-        # Calculate optimal length
-        base_length = 1000
-        additional_length = min(
-            section_markers * 200,  # Add length for each section
-            keywords * 50,          # Add length for each keyword
-            3000                    # Maximum additional length
-        )
-        return base_length + additional_length
-    
-    def _create_weighted_text(self, path, content, path_weight=2):
-        if pd.isna(content):
-            return path * path_weight
-        return (path * path_weight) + " " + content
+    def _analyze_folder(self, folder_path):
+        file_data = {
+            "Path": os.path.basename(folder_path),
+            "Content": "" 
+        }
+        for file_path in os.scandir(folder_path):
+            full_path = os.path.join(folder_path, file_path)
+            if os.path.isfile(full_path):
+                _, ext = os.path.splitext(file_path)
+                if ext in readable_files:
+                    content = read_file(full_path)
+                    file_data["Content"] += content
+                else:
+                    file_data["Content"] += file_path.name
+            else:
+#                Recursively process subfolders
+                subfolder_data = self._analyze_folder(full_path)
+                file_data["Content"] += subfolder_data["Content"]
+        return file_data
     
     def _find_optimal_clusters(self, embeddings, max_k=10):
         
@@ -169,17 +146,3 @@ class DocumentAnalyzer:
                 source_path = os.path.join(source_dir, file)
                 if os.path.exists(source_path):
                     os.rename(source_path, target_folder)
-
-def main():
-    analyzer = DocumentAnalyzer()
-    path = input("Select the desired directory to be organized: ")
-    folder_structure = analyzer.analyze_directory(path)
-    
-    print("\nOrganized structure:")
-    for folder, files in folder_structure.items():
-        print(f"\n📂 {folder}:")
-        for f in files:
-            print(f"   - {f}")
-
-if __name__ == "__main__":
-    main()
