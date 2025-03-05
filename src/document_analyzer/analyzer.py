@@ -220,17 +220,26 @@ class DocumentAnalyzer:
         return [kw[0] for kw in keywords]
     
     def organize_files(self, folder_structure, source_dir, target_dir=None):
-        target_dir = target_dir or source_dir
-        
-        # Create all necessary directories
-        for folder_name in folder_structure.keys():
-            folder_path = os.path.join(target_dir, folder_name)
-            os.makedirs(folder_path, exist_ok=True)
-        
-        # Move files to their respective folders
-        for folder_name, files in folder_structure.items():
-            target_folder = os.path.join(target_dir, folder_name)
-            for file in files:
-                source_path = os.path.join(source_dir, file)
-                if os.path.exists(source_path):
-                    os.rename(source_path, target_folder)
+            target_dir = target_dir or source_dir
+    
+            print(f"\nCreating directories in: {target_dir}")
+            # Create all necessary directories
+            for folder_name in folder_structure.keys():
+                folder_path = os.path.join(target_dir, folder_name)
+                os.makedirs(folder_path, exist_ok=True)
+                
+            # Move files to their respective folders
+            for folder_name, files in folder_structure.items():
+                target_folder = os.path.join(target_dir, folder_name)
+                for file in files:
+                    source_path = os.path.join(source_dir, file)
+                    
+                    if os.path.exists(source_path):
+                        destination_path = os.path.join(target_folder, file)
+                        
+                        try:
+                            os.rename(source_path, destination_path)
+                        except FileExistsError:
+                            print(f"Warning: '{file}' already exists in {target_folder}.")
+                        except Exception as e:
+                            print(f"Error while moving {file}: {str(e)}")
