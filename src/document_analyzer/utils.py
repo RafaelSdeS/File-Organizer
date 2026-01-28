@@ -10,6 +10,14 @@ try:
 except ImportError:
     TINYTAG_AVAILABLE = False
 
+try:
+    import whisper
+    WHISPER_AVAILABLE = True
+    _whisper_model = None
+except ImportError:
+    WHISPER_AVAILABLE = False
+    _whisper_model = None
+
 logger = logging.getLogger(__name__)
 
 audio_extensions = [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a", ".aiff", ".opus"]
@@ -108,15 +116,61 @@ def create_weighted_text(path, content, path_weight=2):
             return str(path) * path_weight
         return (str(path) * path_weight) + " " + content
 
+def _get_whisper_model():
+    """Lazily load the Whisper model to avoid loading it multiple times."""
+    global _whisper_model
+    if _whisper_model is None and WHISPER_AVAILABLE:
+        logger.info("Loading Whisper model (base)...")
+        _whisper_model = whisper.load_model("base")
+    return _whisper_model
+
+def transcribe_audio(file_path, max_duration=60):
+    """
+    Transcribes audio content using OpenAI Whisper.
+    
+    Args:
+        file_path (str): Path to the audio file
+        max_duration (int): Maximum duration in seconds to transcribe (default: 60)
+        
+    Returns:
+        str: Transcribed text or None if transcription fails
+    """
+    if not WHISPER_AVAILABLE:
+        logger.info("Whisper not available, skipping transcription")
+        return None
+    
+    try:
+        model = _get_whisper_model()
+        if model is None:
+            return None
+        
+        logger.info(f"Transcribing audio file: {file_path}")
+        result = model.transcribe(file_path, fp16=False)
+        
+        text = result.get("text", "").strip()
+        if text:
+            # Limit the transcription length for very long audio files
+            max_chars = 2000
+            if len(text) > max_chars:
+                text = text[:max_chars] + "..."
+            return text
+        
+        logger.info(f"No speech detected in audio file: {file_path}")
+        return None
+        
+    except Exception as e:
+        logger.warning(f"Error transcribing audio file {file_path}: {str(e)}")
+        return None
+
 def read_audio_metadata(file_path):
     """
-    Extracts metadata from audio files for clustering purposes.
+    Extracts metadata and transcribes content from audio files for clustering purposes.
     
     Args:
         file_path (str): Path to the audio file
         
     Returns:
-        str: Concatenated metadata string (title, artist, album, genre) or None if extraction fails
+        str: Combined metadata and transcription, or None if extraction fails
     """
     try:
         if not os.path.exists(file_path):
@@ -131,30 +185,40 @@ def read_audio_metadata(file_path):
             logger.warning(f"Unsupported audio file type: {ext}")
             return None
         
-        if not TINYTAG_AVAILABLE:
-            logger.info(f"TinyTag not available, using filename only for: {file_path}")
-            return None
+        content_parts = []
         
-        tag = TinyTag.get(file_path)
+        # Extract metadata using TinyTag
+        if TINYTAG_AVAILABLE:
+            try:
+                tag = TinyTag.get(file_path)
+                metadata_parts = []
+                if tag.title:
+                    metadata_parts.append(tag.title)
+                if tag.artist:
+                    metadata_parts.append(tag.artist)
+                if tag.album:
+                    metadata_parts.append(tag.album)
+                if tag.genre:
+                    metadata_parts.append(tag.genre)
+                if tag.composer:
+                    metadata_parts.append(tag.composer)
+                
+                if metadata_parts:
+                    content_parts.append(" ".join(metadata_parts))
+            except Exception as e:
+                logger.warning(f"Error extracting metadata from {file_path}: {str(e)}")
         
-        metadata_parts = []
-        if tag.title:
-            metadata_parts.append(tag.title)
-        if tag.artist:
-            metadata_parts.append(tag.artist)
-        if tag.album:
-            metadata_parts.append(tag.album)
-        if tag.genre:
-            metadata_parts.append(tag.genre)
-        if tag.composer:
-            metadata_parts.append(tag.composer)
+        # Transcribe audio content using Whisper
+        transcription = transcribe_audio(file_path)
+        if transcription:
+            content_parts.append(transcription)
         
-        if metadata_parts:
-            return " ".join(metadata_parts)
+        if content_parts:
+            return " ".join(content_parts)
         
-        logger.info(f"No metadata found in audio file: {file_path}")
+        logger.info(f"No content extracted from audio file: {file_path}")
         return None
         
     except Exception as e:
-        logger.warning(f"Error reading audio metadata from {file_path}: {str(e)}")
+        logger.warning(f"Error reading audio file {file_path}: {str(e)}")
         return None
