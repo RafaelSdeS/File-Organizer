@@ -119,34 +119,91 @@ def create_weighted_text(path, content, path_weight=2):
             return str(path) * path_weight
         return (str(path) * path_weight) + " " + content
 
-def _get_vosk_model():
-    """Lazily load the Vosk model to avoid loading it multiple times."""
-    global _vosk_model
-    if _vosk_model is None and VOSK_AVAILABLE:
-        import tempfile
-        import urllib.request
-        import zipfile
+# Supported language models (small/lightweight versions for efficiency)
+VOSK_LANGUAGE_MODELS = {
+    "en": "vosk-model-small-en-us-0.15",      # English (US)
+    "zh": "vosk-model-small-cn-0.22",          # Chinese
+    "ru": "vosk-model-small-ru-0.22",          # Russian
+    "fr": "vosk-model-small-fr-0.22",          # French
+    "de": "vosk-model-small-de-0.15",          # German
+    "es": "vosk-model-small-es-0.42",          # Spanish
+    "pt": "vosk-model-small-pt-0.3",           # Portuguese
+    "tr": "vosk-model-small-tr-0.3",           # Turkish
+    "vi": "vosk-model-small-vn-0.4",           # Vietnamese
+    "it": "vosk-model-small-it-0.22",          # Italian
+    "nl": "vosk-model-small-nl-0.22",          # Dutch
+    "uk": "vosk-model-small-uk-v3-nano",       # Ukrainian
+    "ja": "vosk-model-small-ja-0.22",          # Japanese
+    "hi": "vosk-model-small-hi-0.22",          # Hindi
+    "ko": "vosk-model-small-ko-0.22",          # Korean
+    "ar": "vosk-model-ar-mgb2-0.4",            # Arabic
+    "fa": "vosk-model-small-fa-0.5",           # Persian/Farsi
+    "pl": "vosk-model-small-pl-0.22",          # Polish
+    "ca": "vosk-model-small-ca-0.4",           # Catalan
+    "cs": "vosk-model-small-cs-0.4-rhasspy",   # Czech
+}
+
+# Default language for transcription
+_vosk_language = "en"
+_vosk_models = {}
+
+def set_transcription_language(lang_code):
+    """
+    Set the language for audio transcription.
+    
+    Args:
+        lang_code (str): ISO 639-1 language code (e.g., 'en', 'es', 'fr', 'de', 'zh')
+    
+    Supported languages: en (English), zh (Chinese), ru (Russian), fr (French),
+    de (German), es (Spanish), pt (Portuguese), tr (Turkish), vi (Vietnamese),
+    it (Italian), nl (Dutch), uk (Ukrainian), ja (Japanese), hi (Hindi),
+    ko (Korean), ar (Arabic), fa (Persian), pl (Polish), ca (Catalan), cs (Czech)
+    """
+    global _vosk_language
+    if lang_code in VOSK_LANGUAGE_MODELS:
+        _vosk_language = lang_code
+        logger.info(f"Transcription language set to: {lang_code}")
+    else:
+        logger.warning(f"Unsupported language code: {lang_code}. Using default (en).")
+        _vosk_language = "en"
+
+def _get_vosk_model(lang_code=None):
+    """Lazily load the Vosk model for the specified language."""
+    global _vosk_models
+    
+    if not VOSK_AVAILABLE:
+        return None
+    
+    lang = lang_code or _vosk_language
+    
+    if lang in _vosk_models:
+        return _vosk_models[lang]
+    
+    import tempfile
+    import urllib.request
+    import zipfile
+    
+    model_name = VOSK_LANGUAGE_MODELS.get(lang, VOSK_LANGUAGE_MODELS["en"])
+    model_path = os.path.join(tempfile.gettempdir(), model_name)
+    
+    if not os.path.exists(model_path):
+        logger.info(f"Downloading Vosk model for language '{lang}'...")
+        model_url = f"https://alphacephei.com/vosk/models/{model_name}.zip"
+        zip_path = os.path.join(tempfile.gettempdir(), f"vosk-model-{lang}.zip")
         
-        model_path = os.path.join(tempfile.gettempdir(), "vosk-model-small-en-us-0.15")
-        
-        if not os.path.exists(model_path):
-            logger.info("Downloading Vosk model (small English)...")
-            model_url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
-            zip_path = os.path.join(tempfile.gettempdir(), "vosk-model.zip")
-            
-            try:
-                urllib.request.urlretrieve(model_url, zip_path)
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(tempfile.gettempdir())
-                os.remove(zip_path)
-            except Exception as e:
-                logger.error(f"Failed to download Vosk model: {str(e)}")
-                return None
-        
-        logger.info("Loading Vosk model...")
-        vosk.SetLogLevel(-1)  # Suppress Vosk logging
-        _vosk_model = vosk.Model(model_path)
-    return _vosk_model
+        try:
+            urllib.request.urlretrieve(model_url, zip_path)
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(tempfile.gettempdir())
+            os.remove(zip_path)
+        except Exception as e:
+            logger.error(f"Failed to download Vosk model for '{lang}': {str(e)}")
+            return None
+    
+    logger.info(f"Loading Vosk model for language '{lang}'...")
+    vosk.SetLogLevel(-1)  # Suppress Vosk logging
+    _vosk_models[lang] = vosk.Model(model_path)
+    return _vosk_models[lang]
 
 def _convert_to_wav(input_path):
     """Convert audio file to WAV format suitable for Vosk (16kHz, mono, 16-bit)."""
