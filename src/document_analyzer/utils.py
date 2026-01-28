@@ -11,12 +11,15 @@ except ImportError:
     TINYTAG_AVAILABLE = False
 
 try:
-    import whisper
-    WHISPER_AVAILABLE = True
-    _whisper_model = None
+    import vosk
+    import wave
+    import json
+    import subprocess
+    VOSK_AVAILABLE = True
+    _vosk_model = None
 except ImportError:
-    WHISPER_AVAILABLE = False
-    _whisper_model = None
+    VOSK_AVAILABLE = False
+    _vosk_model = None
 
 logger = logging.getLogger(__name__)
 
@@ -116,17 +119,67 @@ def create_weighted_text(path, content, path_weight=2):
             return str(path) * path_weight
         return (str(path) * path_weight) + " " + content
 
-def _get_whisper_model():
-    """Lazily load the Whisper model to avoid loading it multiple times."""
-    global _whisper_model
-    if _whisper_model is None and WHISPER_AVAILABLE:
-        logger.info("Loading Whisper model (base)...")
-        _whisper_model = whisper.load_model("base")
-    return _whisper_model
+def _get_vosk_model():
+    """Lazily load the Vosk model to avoid loading it multiple times."""
+    global _vosk_model
+    if _vosk_model is None and VOSK_AVAILABLE:
+        import tempfile
+        import urllib.request
+        import zipfile
+        
+        model_path = os.path.join(tempfile.gettempdir(), "vosk-model-small-en-us-0.15")
+        
+        if not os.path.exists(model_path):
+            logger.info("Downloading Vosk model (small English)...")
+            model_url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+            zip_path = os.path.join(tempfile.gettempdir(), "vosk-model.zip")
+            
+            try:
+                urllib.request.urlretrieve(model_url, zip_path)
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(tempfile.gettempdir())
+                os.remove(zip_path)
+            except Exception as e:
+                logger.error(f"Failed to download Vosk model: {str(e)}")
+                return None
+        
+        logger.info("Loading Vosk model...")
+        vosk.SetLogLevel(-1)  # Suppress Vosk logging
+        _vosk_model = vosk.Model(model_path)
+    return _vosk_model
+
+def _convert_to_wav(input_path):
+    """Convert audio file to WAV format suitable for Vosk (16kHz, mono, 16-bit)."""
+    import tempfile
+    
+    output_path = tempfile.mktemp(suffix=".wav")
+    
+    try:
+        # Use ffmpeg to convert audio to the required format
+        cmd = [
+            "ffmpeg", "-y", "-i", input_path,
+            "-ar", "16000",  # 16kHz sample rate
+            "-ac", "1",      # Mono
+            "-sample_fmt", "s16",  # 16-bit
+            output_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            logger.warning(f"ffmpeg conversion failed: {result.stderr}")
+            return None
+        
+        return output_path
+    except FileNotFoundError:
+        logger.warning("ffmpeg not found, cannot convert audio file")
+        return None
+    except Exception as e:
+        logger.warning(f"Error converting audio file: {str(e)}")
+        return None
 
 def transcribe_audio(file_path, max_duration=60):
     """
-    Transcribes audio content using OpenAI Whisper.
+    Transcribes audio content using Vosk (free, offline speech recognition).
     
     Args:
         file_path (str): Path to the audio file
@@ -135,28 +188,84 @@ def transcribe_audio(file_path, max_duration=60):
     Returns:
         str: Transcribed text or None if transcription fails
     """
-    if not WHISPER_AVAILABLE:
-        logger.info("Whisper not available, skipping transcription")
+    if not VOSK_AVAILABLE:
+        logger.info("Vosk not available, skipping transcription")
         return None
     
     try:
-        model = _get_whisper_model()
+        model = _get_vosk_model()
         if model is None:
             return None
         
         logger.info(f"Transcribing audio file: {file_path}")
-        result = model.transcribe(file_path, fp16=False)
         
-        text = result.get("text", "").strip()
-        if text:
-            # Limit the transcription length for very long audio files
-            max_chars = 2000
-            if len(text) > max_chars:
-                text = text[:max_chars] + "..."
-            return text
+        # Convert to WAV if needed
+        _, ext = os.path.splitext(file_path)
+        if ext.lower() != ".wav":
+            wav_path = _convert_to_wav(file_path)
+            if wav_path is None:
+                return None
+            temp_file = True
+        else:
+            wav_path = file_path
+            temp_file = False
         
-        logger.info(f"No speech detected in audio file: {file_path}")
-        return None
+        try:
+            wf = wave.open(wav_path, "rb")
+            
+            # Verify audio format
+            if wf.getnchannels() != 1 or wf.getsampwidth() != 2:
+                logger.warning("Audio file must be mono 16-bit, attempting conversion...")
+                wf.close()
+                wav_path = _convert_to_wav(file_path)
+                if wav_path is None:
+                    return None
+                temp_file = True
+                wf = wave.open(wav_path, "rb")
+            
+            rec = vosk.KaldiRecognizer(model, wf.getframerate())
+            rec.SetWords(True)
+            
+            results = []
+            frames_read = 0
+            max_frames = max_duration * wf.getframerate()
+            
+            while True:
+                data = wf.readframes(4000)
+                if len(data) == 0:
+                    break
+                
+                frames_read += 4000
+                if frames_read > max_frames:
+                    break
+                
+                if rec.AcceptWaveform(data):
+                    result = json.loads(rec.Result())
+                    if result.get("text"):
+                        results.append(result["text"])
+            
+            # Get final result
+            final_result = json.loads(rec.FinalResult())
+            if final_result.get("text"):
+                results.append(final_result["text"])
+            
+            wf.close()
+            
+            text = " ".join(results).strip()
+            
+            if text:
+                # Limit the transcription length
+                max_chars = 2000
+                if len(text) > max_chars:
+                    text = text[:max_chars] + "..."
+                return text
+            
+            logger.info(f"No speech detected in audio file: {file_path}")
+            return None
+            
+        finally:
+            if temp_file and wav_path and os.path.exists(wav_path):
+                os.remove(wav_path)
         
     except Exception as e:
         logger.warning(f"Error transcribing audio file {file_path}: {str(e)}")
@@ -208,7 +317,7 @@ def read_audio_metadata(file_path):
             except Exception as e:
                 logger.warning(f"Error extracting metadata from {file_path}: {str(e)}")
         
-        # Transcribe audio content using Whisper
+        # Transcribe audio content using Vosk
         transcription = transcribe_audio(file_path)
         if transcription:
             content_parts.append(transcription)
