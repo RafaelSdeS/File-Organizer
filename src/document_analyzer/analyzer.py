@@ -8,11 +8,12 @@ import os
 import numpy as np
 import logging
 
-from .utils import create_weighted_text, read_file
+from .utils import create_weighted_text, read_file, read_audio_metadata
 
 logger = logging.getLogger(__name__)
 
 readable_files = [".pdf", ".txt", ".docx", ".xml"]
+audio_files = [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a", ".aiff", ".opus"]
 class DocumentAnalyzer:
 
     #Main class for analyzing and organizing documents using AI-powered clustering.
@@ -57,6 +58,7 @@ class DocumentAnalyzer:
                     try:
                         if entry.is_file():
                             _, ext = os.path.splitext(entry.name)
+                            ext = ext.lower()
                             if ext in readable_files:
                                 try:
                                     content = read_file(os.path.join(path, entry.name))
@@ -66,6 +68,19 @@ class DocumentAnalyzer:
                                     }
                                 except Exception as e:
                                     logger.warning(f"Failed to read file {entry.name}: {str(e)}")
+                                    file_data = {
+                                        "Path": entry.name,
+                                        "Content": None
+                                    }
+                            elif ext in audio_files:
+                                try:
+                                    content = read_audio_metadata(os.path.join(path, entry.name))
+                                    file_data = {
+                                        "Path": entry.name,
+                                        "Content": content
+                                    }
+                                except Exception as e:
+                                    logger.warning(f"Failed to read audio file {entry.name}: {str(e)}")
                                     file_data = {
                                         "Path": entry.name,
                                         "Content": None
@@ -142,10 +157,15 @@ class DocumentAnalyzer:
 
             if os.path.isfile(full_path):
                 _, ext = os.path.splitext(file_path)
+                ext = ext.lower()
                 
                 if ext in readable_files:
                     content = read_file(full_path)
                     file_data["Content"] += (file_path.name + content)
+
+                elif ext in audio_files:
+                    content = read_audio_metadata(full_path)
+                    file_data["Content"] += (file_path.name + (content or ""))
 
                 else:
                     file_data["Content"] += file_path.name

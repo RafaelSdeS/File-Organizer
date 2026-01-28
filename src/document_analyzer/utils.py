@@ -4,7 +4,15 @@ import logging
 import os
 import chardet
 
+try:
+    from tinytag import TinyTag
+    TINYTAG_AVAILABLE = True
+except ImportError:
+    TINYTAG_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
+
+audio_extensions = [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a", ".aiff", ".opus"]
 
 def read_file(file_path):
     try:
@@ -99,3 +107,54 @@ def create_weighted_text(path, content, path_weight=2):
         if pd.isna(content):
             return str(path) * path_weight
         return (str(path) * path_weight) + " " + content
+
+def read_audio_metadata(file_path):
+    """
+    Extracts metadata from audio files for clustering purposes.
+    
+    Args:
+        file_path (str): Path to the audio file
+        
+    Returns:
+        str: Concatenated metadata string (title, artist, album, genre) or None if extraction fails
+    """
+    try:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+        if not os.access(file_path, os.R_OK):
+            raise PermissionError(f"Permission denied for file: {file_path}")
+        
+        _, ext = os.path.splitext(file_path)
+        ext = ext.lower()
+        
+        if ext not in audio_extensions:
+            logger.warning(f"Unsupported audio file type: {ext}")
+            return None
+        
+        if not TINYTAG_AVAILABLE:
+            logger.info(f"TinyTag not available, using filename only for: {file_path}")
+            return None
+        
+        tag = TinyTag.get(file_path)
+        
+        metadata_parts = []
+        if tag.title:
+            metadata_parts.append(tag.title)
+        if tag.artist:
+            metadata_parts.append(tag.artist)
+        if tag.album:
+            metadata_parts.append(tag.album)
+        if tag.genre:
+            metadata_parts.append(tag.genre)
+        if tag.composer:
+            metadata_parts.append(tag.composer)
+        
+        if metadata_parts:
+            return " ".join(metadata_parts)
+        
+        logger.info(f"No metadata found in audio file: {file_path}")
+        return None
+        
+    except Exception as e:
+        logger.warning(f"Error reading audio metadata from {file_path}: {str(e)}")
+        return None
