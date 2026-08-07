@@ -19,55 +19,58 @@ from src.document_analyzer.utils import read_file, analyze_document_content, cre
 
 class TestDocumentAnalyzer(unittest.TestCase):
     def setUp(self):
+        # Patch where the names are looked up (analyzer.py imports them at
+        # module scope), and start the patches before DocumentAnalyzer() runs
+        # so every test gets the mocks instead of the real, slow-to-load model.
+        model_patcher = patch('src.document_analyzer.analyzer.SentenceTransformer')
+        kw_patcher = patch('src.document_analyzer.analyzer.yake.KeywordExtractor')
+        mock_model_cls = model_patcher.start()
+        mock_kw_cls = kw_patcher.start()
+        self.addCleanup(model_patcher.stop)
+        self.addCleanup(kw_patcher.stop)
+
         self.analyzer = DocumentAnalyzer()
-        
+        self.mock_model = mock_model_cls.return_value
+        self.mock_kw_extractor = mock_kw_cls.return_value
+
     def test_init(self):
         """Test that DocumentAnalyzer initializes correctly"""
         self.assertIsNotNone(self.analyzer.model)
         self.assertIsNotNone(self.analyzer.kw_extractor)
-        
-    @patch('sentence_transformers.SentenceTransformer')
-    @patch('yake.KeywordExtractor')
-    def test_analyze_directory(self, mock_kw_extractor, mock_model):
+
+    def test_analyze_directory(self):
         """Test directory analysis with mocked components"""
-        # Configure mocks
-        mock_model.return_value.encode.side_effect = Exception("Mocked error")
-        mock_kw_extractor.return_value.extract_keywords.return_value = [
+        self.mock_model.encode.return_value = np.array(
+            [[0, 0], [0, 1], [10, 10]]
+        )
+        self.mock_kw_extractor.extract_keywords.return_value = [
             ('mock_keyword', 0.5)
         ]
-        
+
         test_dir = Path("test_directory")
-        test_file = test_dir / "test.pdf"
-        
+
         try:
             test_dir.mkdir(exist_ok=True)
-            test_file.touch(exist_ok=True)
-            
-            # Verify initial state
-            self.assertTrue(test_dir.exists())
-            self.assertTrue(test_file.exists())
-            
+            for name in ("test1.pdf", "test2.pdf", "test3.pdf"):
+                (test_dir / name).touch(exist_ok=True)
+
             result = self.analyzer.analyze_directory(str(test_dir))
             self.assertIsInstance(result, dict)
-            self.assertEqual(len(result), 1)  # More specific assertion
-            
-            mock_model.return_value.encode.assert_called_once()
-            mock_kw_extractor.return_value.extract_keywords.assert_called_once()
-            
-        except Exception as e:
-            self.fail(f"Unexpected exception: {str(e)}")
+            # Both clusters extract the same mocked keyword, so they should
+            # merge into one folder rather than one overwriting the other.
+            self.assertEqual(len(result), 1)
+            self.assertEqual(sum(len(files) for files in result.values()), 3)
+
+            self.mock_model.encode.assert_called_once()
+            self.assertEqual(self.mock_kw_extractor.extract_keywords.call_count, 2)
         finally:
             shutil.rmtree(test_dir, ignore_errors=True)
-                
-    @patch('sentence_transformers.SentenceTransformer')
-    @patch('yake.KeywordExtractor')
-    def test_analyze_directory_with_exceptions(self, mock_kw_extractor, mock_model):
-        """Test directory analysis handles exceptions gracefully"""
-        mock_model.return_value.encode.side_effect = Exception("Mocked error")
-        
-        result = self.analyzer.analyze_directory("nonexistent_directory")
-        self.assertIsInstance(result, dict)
-        
+
+    def test_analyze_directory_with_exceptions(self):
+        """Test directory analysis raises for a missing directory"""
+        with self.assertRaises(FileNotFoundError):
+            self.analyzer.analyze_directory("nonexistent_directory")
+
     def test_find_optimal_clusters(self):
         """Test optimal cluster detection"""
         # Create sample embeddings
@@ -76,7 +79,16 @@ class TestDocumentAnalyzer(unittest.TestCase):
         optimal_k = self.analyzer._find_optimal_clusters(embeddings)
         self.assertGreater(optimal_k, 1)
         self.assertLess(optimal_k, 10)  # max_k default is 10
-        
+
+    def test_find_optimal_clusters_small_input(self):
+        """Regression: 2-4 embeddings used to crash (elbow method needs >=3
+        k-candidates, i.e. >=5 documents, for a non-empty 2nd derivative)."""
+        for n in (1, 2, 3, 4, 5):
+            embeddings = np.random.rand(n, 10).astype('float32')
+            optimal_k = self.analyzer._find_optimal_clusters(embeddings)
+            self.assertGreaterEqual(optimal_k, 1)
+            self.assertLess(optimal_k, n if n > 1 else 2)
+
     def test_organize_clusters(self):
         """Test cluster organization"""
         # Create sample DataFrame
@@ -91,18 +103,17 @@ class TestDocumentAnalyzer(unittest.TestCase):
         self.assertIsInstance(result, dict)
         self.assertEqual(len(result), 2)  # Should have 2 clusters
         
-    @patch('yake.KeywordExtractor')
-    def test_extract_keywords(self, mock_kw_extractor):
+    def test_extract_keywords(self):
         """Test keyword extraction"""
-        mock_kw_extractor.return_value.extract_keywords.return_value = [
+        self.mock_kw_extractor.extract_keywords.return_value = [
             ('keyword1', 0.5),
             ('keyword2', 0.3)
         ]
-        
+
         text_list = ['This is a test document', 'Another test']
         keywords = self.analyzer._extract_keywords(text_list)
-        
-        self.assertEqual(keywords, ['test document', 'test', 'document'])
+
+        self.assertEqual(keywords, ['keyword1', 'keyword2'])
         
     def test_analyze_document_content(self):
         """Test document content analysis"""

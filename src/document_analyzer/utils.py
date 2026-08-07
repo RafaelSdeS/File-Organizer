@@ -3,8 +3,19 @@ import pandas as pd
 import logging
 import os
 import chardet
+import zipfile
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
+
+_DOCX_TEXT_TAG = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"
+
+
+def _read_docx(file_path):
+    with zipfile.ZipFile(file_path) as archive:
+        with archive.open("word/document.xml") as f:
+            tree = ET.parse(f)
+    return "\n".join(node.text for node in tree.iter(_DOCX_TEXT_TAG) if node.text)
 
 def read_file(file_path):
     try:
@@ -42,8 +53,19 @@ def read_file(file_path):
                 logger.error(f"Invalid PDF format: {file_path} - {str(e)}")
                 raise ValueError(f"Invalid PDF format: {file_path}")
         
+        # Handle Word documents (docx is a zip of XML parts)
+        elif ext == '.docx':
+            try:
+                text = _read_docx(file_path)
+                if not text:
+                    logger.info(f"No text found in DOCX file: {file_path}")
+                return text
+            except (zipfile.BadZipFile, KeyError, ET.ParseError) as e:
+                logger.error(f"Invalid DOCX format: {file_path} - {str(e)}")
+                raise ValueError(f"Invalid DOCX format: {file_path}")
+
         # Handle text files
-        elif ext in ['.txt', '.docx', '.xml']:
+        elif ext in ['.txt', '.xml']:
             try:
                 # Detect encoding automatically
                 with open(file_path, 'rb') as file:

@@ -22,7 +22,7 @@ Let's visualize the system's workflow:
 
 ## Installation Requirements
 ```bash
-pip install pandas scikit-learn yake sentence-transformers numpy
+pip install -r requirements.txt
 ```
 
 ## Usage Example

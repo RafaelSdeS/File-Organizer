@@ -5,6 +5,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 from collections import Counter
 import os
+import shutil
 import numpy as np
 import logging
 
@@ -158,42 +159,45 @@ class DocumentAnalyzer:
         return file_data
     
     def _find_optimal_clusters(self, embeddings, max_k=10):
+        # Fewer than 3 documents can't be meaningfully split into 2+ clusters.
+        if len(embeddings) <= 2:
+            return 1
+
         distortions = []
         silhouette_scores = []
         calinski_scores = []
         K = range(2, min(len(embeddings), max_k))
-        
+
         # Calculate multiple metrics
         for k in K:
             kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
             kmeans.fit(embeddings)
-            
+
             distortions.append(kmeans.inertia_)
             silhouette_scores.append(silhouette_score(embeddings, kmeans.labels_))
             calinski_scores.append(calinski_harabasz_score(embeddings, kmeans.labels_))
-        
+
         # Find optimal k using multiple criteria
-        second_derivative = np.diff(distortions, 2)
         silhouette_max = np.argmax(silhouette_scores)
         calinski_max = np.argmax(calinski_scores)
-        
-        # Combine metrics for more robust result
-        k_candidates = [
-            K[np.argmin(second_derivative)],
-            K[silhouette_max],
-            K[calinski_max]
-        ]
-        
+        k_candidates = [K[silhouette_max], K[calinski_max]]
+
+        # The elbow method's 2nd derivative needs at least 3 distortion points
+        # (i.e. at least 5 documents) to produce anything non-empty.
+        second_derivative = np.diff(distortions, 2)
+        if len(second_derivative) > 0:
+            k_candidates.append(K[np.argmin(second_derivative)])
+
         # Select most frequent k or use silhouette if tie
         k_counts = Counter(k_candidates)
         k_optimal = k_counts.most_common(1)[0][0]
-        
+
         # Validate result
         if k_optimal < 2:
             k_optimal = 2
         if k_optimal >= len(embeddings):
             k_optimal = len(embeddings) - 1
-            
+
         return k_optimal
     
     def _organize_clusters(self, df):
@@ -209,7 +213,11 @@ class DocumentAnalyzer:
             # Create folder name from top keywords
             folder_name = "_".join(keywords[:2]).replace(" ", "_").capitalize()
             cluster_keywords[cluster] = folder_name if folder_name else f"Cluster_{cluster}"
-            folder_structure[cluster_keywords[cluster]] = cluster_files["Path"].tolist()
+            # Different clusters can extract the same top keywords; merge into
+            # the existing folder instead of overwriting it and losing files.
+            folder_structure.setdefault(cluster_keywords[cluster], []).extend(
+                cluster_files["Path"].tolist()
+            )
             
         return folder_structure
     
@@ -238,7 +246,7 @@ class DocumentAnalyzer:
                         destination_path = os.path.join(target_folder, file)
                         
                         try:
-                            os.rename(source_path, destination_path)
+                            shutil.move(source_path, destination_path)
                         except FileExistsError:
                             print(f"Warning: '{file}' already exists in {target_folder}.")
                         except Exception as e:

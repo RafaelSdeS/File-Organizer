@@ -1,10 +1,21 @@
+import logging
+
 from .analyzer import DocumentAnalyzer
- 
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+
 def main():
     analyzer = DocumentAnalyzer()
     path = input("Select the desired directory to be organized: ")
-    folder_structure = analyzer.analyze_directory(path)
-    
+
+    try:
+        folder_structure = analyzer.analyze_directory(path)
+    except Exception as e:
+        logger.error(f"Analysis failed: {e}")
+        return
+
     print("\nOrganized structure:")
     for folder, files in folder_structure.items():
         print(f"\n📂 {folder}:")

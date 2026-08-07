@@ -1,0 +1,7 @@
+pandas
+scikit-learn
+yake
+sentence-transformers
+numpy
+PyPDF2
+chardet
