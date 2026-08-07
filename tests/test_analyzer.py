@@ -127,10 +127,60 @@ class TestDocumentAnalyzer(unittest.TestCase):
         """Test weighted text creation"""
         path = "test.pdf"
         content = "Test content"
-        
+
         weighted_text = create_weighted_text(path, content)
         self.assertIn(path, weighted_text)
         self.assertIn(content, weighted_text)
+
+    def test_organize_files_moves_files_in_place(self):
+        """organize_files should move each listed file into its cluster folder."""
+        source_dir = Path("test_organize_source")
+        try:
+            source_dir.mkdir(exist_ok=True)
+            (source_dir / "a.txt").write_text("a")
+            (source_dir / "b.txt").write_text("b")
+
+            self.analyzer.organize_files(
+                {"Cluster_one": ["a.txt", "b.txt"]}, str(source_dir)
+            )
+
+            dest_dir = source_dir / "Cluster_one"
+            self.assertTrue((dest_dir / "a.txt").exists())
+            self.assertTrue((dest_dir / "b.txt").exists())
+            self.assertFalse((source_dir / "a.txt").exists())
+        finally:
+            shutil.rmtree(source_dir, ignore_errors=True)
+
+    def test_organize_files_target_dir(self):
+        """organize_files should support moving into a separate target directory."""
+        source_dir = Path("test_organize_source2")
+        target_dir = Path("test_organize_target2")
+        try:
+            source_dir.mkdir(exist_ok=True)
+            (source_dir / "a.txt").write_text("a")
+
+            self.analyzer.organize_files(
+                {"Cluster_one": ["a.txt"]}, str(source_dir), str(target_dir)
+            )
+
+            self.assertTrue((target_dir / "Cluster_one" / "a.txt").exists())
+            self.assertFalse((source_dir / "a.txt").exists())
+        finally:
+            shutil.rmtree(source_dir, ignore_errors=True)
+            shutil.rmtree(target_dir, ignore_errors=True)
+
+    def test_organize_files_missing_source_skipped(self):
+        """A file listed in folder_structure but absent on disk should be skipped, not raise."""
+        source_dir = Path("test_organize_source3")
+        try:
+            source_dir.mkdir(exist_ok=True)
+            # No files created - "missing.txt" doesn't exist on disk.
+            self.analyzer.organize_files(
+                {"Cluster_one": ["missing.txt"]}, str(source_dir)
+            )
+            self.assertFalse((source_dir / "Cluster_one" / "missing.txt").exists())
+        finally:
+            shutil.rmtree(source_dir, ignore_errors=True)
 
 if __name__ == '__main__':
     unittest.main()
