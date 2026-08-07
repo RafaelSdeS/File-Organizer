@@ -20,10 +20,12 @@ class DocumentAnalyzer:
     #Main class for analyzing and organizing documents using AI-powered clustering.
     #Uses sentence embeddings for content similarity analysis and YAKE for keyword extraction.
 
-    def __init__(self):
+    def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5):
         self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-        self.kw_extractor = yake.KeywordExtractor(lan="en", n=2, top=5)
-        
+        self.kw_extractor = yake.KeywordExtractor(lan="en", n=yake_ngram, top=yake_top)
+        self.path_weight = path_weight
+        self.max_clusters = max_clusters
+
     def analyze_directory(self, path):
         """
         Analyzes all files in the specified directory and organizes them into clusters.
@@ -111,20 +113,22 @@ class DocumentAnalyzer:
                 lambda row: create_weighted_text(
                     row["Path"],
                     row["Content"],
-                    path_weight=2
+                    path_weight=self.path_weight
                 ),
                 axis=1
             )
-            
+
             # Generate embeddings for clustering
+            logger.info(f"Read {len(files_data)} entries from {path}; generating embeddings...")
             try:
                 embeddings = self.model.encode(df["Text"].tolist())
             except Exception as e:
                 raise RuntimeError(f"Failed to generate embeddings: {str(e)}")
-            
+
             # Find optimal number of clusters using the Elbow method
+            logger.info("Determining optimal number of clusters...")
             try:
-                optimal_clusters = self._find_optimal_clusters(embeddings)
+                optimal_clusters = self._find_optimal_clusters(embeddings, max_k=self.max_clusters)
             except Exception as e:
                 raise RuntimeError(f"Failed to find optimal clusters: {str(e)}")
             

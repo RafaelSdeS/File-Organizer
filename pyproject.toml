@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "document-analyzer"
+version = "0.1.0"
+description = "AI-powered CLI that clusters and organizes files by content similarity"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+dependencies = [
+    "pandas==3.0.5",
+    "scikit-learn==1.9.0",
+    "yake==0.7.3",
+    "sentence-transformers==5.7.0",
+    "numpy==2.5.1",
+    "PyPDF2==3.0.1",
+    "chardet==7.5.1",
+]
+
+[project.optional-dependencies]
+audio = ["tinytag", "vosk"]
+
+[project.scripts]
+organize-files = "document_analyzer.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -15,6 +15,10 @@ def parse_args():
     parser.add_argument("--target-dir", help="Move organized files here instead of in place")
     parser.add_argument("--dry-run", action="store_true", help="Show the proposed structure without moving files")
     parser.add_argument("-y", "--yes", action="store_true", help="Move files without confirmation prompt")
+    parser.add_argument("--path-weight", type=int, default=2, help="How many times the filename is repeated when weighting embeddings (default: 2)")
+    parser.add_argument("--max-clusters", type=int, default=10, help="Upper bound on the number of clusters to consider (default: 10)")
+    parser.add_argument("--keyword-ngram", type=int, default=2, help="Max n-gram size for YAKE keyword extraction (default: 2)")
+    parser.add_argument("--keyword-count", type=int, default=5, help="Number of keywords YAKE extracts per cluster, top 2 are used for folder names (default: 5)")
     return parser.parse_args()
 
 
@@ -22,7 +26,12 @@ def main():
     args = parse_args()
     path = args.path or input("Select the desired directory to be organized: ")
 
-    analyzer = DocumentAnalyzer()
+    analyzer = DocumentAnalyzer(
+        path_weight=args.path_weight,
+        max_clusters=args.max_clusters,
+        yake_ngram=args.keyword_ngram,
+        yake_top=args.keyword_count,
+    )
     try:
         folder_structure = analyzer.analyze_directory(path)
     except Exception as e:
