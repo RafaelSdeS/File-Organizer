@@ -36,7 +36,7 @@ Single pipeline, driven from `src/document_analyzer/analyzer.py::DocumentAnalyze
 
 1. **`analyze_directory(path)`** — top-level entry point.
    - Scans the directory (`os.scandir`, non-recursive at this level for files, but recurses into subfolders via `_analyze_folder`).
-   - Only files with extensions in `readable_files` (`.pdf`, `.txt`, `.docx`, `.xml`) get their content read via `utils.read_file`; others get `Content: None`.
+   - Files with extensions in `readable_files` (`.pdf`, `.txt`, `.docx`, `.xml`) get content via `utils.read_file`; extensions in `audio_files` (`.mp3`, `.wav`, `.flac`, `.aac`, `.ogg`, `.wma`, `.m4a`, `.aiff`, `.opus`) get content via `utils.read_audio_metadata`; everything else gets `Content: None`. Extension matching is case-insensitive (`ext.lower()`).
    - Builds a `pandas.DataFrame` with one row per top-level entry (`Path`, `Content`).
    - `utils.create_weighted_text` concatenates the filename (repeated `path_weight` times) with file content into a `Text` column — this weighting biases embeddings toward filename similarity, not just content.
    - Embeds `Text` via `SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")`.
@@ -52,6 +52,7 @@ Single pipeline, driven from `src/document_analyzer/analyzer.py::DocumentAnalyze
 - `read_file` — dispatches by extension: PyPDF2 for `.pdf`, a minimal stdlib `zipfile`/`xml.etree.ElementTree` extraction (`_read_docx`) for `.docx` (reads `word/document.xml`, pulls `<w:t>` text runs — no external docx library needed), `chardet`-detected-encoding text read for `.txt`/`.xml`. Raises on unsupported/unreadable files; empty files return `""`.
 - `create_weighted_text` — the filename/content weighting used for embeddings (see above).
 - `analyze_document_content` — computes a suggested extraction length from section/keyword counts; defined but not currently called anywhere in the pipeline.
+- `read_audio_metadata` — for `audio_files` extensions, combines TinyTag metadata (title/artist/album/genre/composer) with a Vosk offline transcription (via `transcribe_audio`, which shells out to `ffmpeg` to normalize to 16kHz mono WAV first). `TINYTAG_AVAILABLE`/`VOSK_AVAILABLE` are set at import time from `try/except ImportError`, so the whole audio path degrades to `None` (no crash) if `tinytag`/`vosk`/`ffmpeg` aren't installed — those are optional deps in `requirements.txt`. `set_transcription_language(lang_code)` picks from `VOSK_LANGUAGE_MODELS`; models are lazily downloaded to the system temp dir on first use per language.
 
 `src/document_analyzer/main.py` is a thin interactive wrapper: prompts for a path, prints the resulting cluster structure, then calls `organize_files` on the same path (source == target, so files move in place).
 

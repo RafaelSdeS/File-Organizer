@@ -5,3 +5,8 @@ sentence-transformers
 numpy
 PyPDF2
 chardet
+
+# Optional: enables audio file support (metadata + offline transcription).
+# Code degrades gracefully without these; transcription also needs ffmpeg on PATH.
+tinytag
+vosk
