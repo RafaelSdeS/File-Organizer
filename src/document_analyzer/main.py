@@ -26,12 +26,17 @@ def main():
     args = parse_args()
     path = args.path or input("Select the desired directory to be organized: ")
 
-    analyzer = DocumentAnalyzer(
-        path_weight=args.path_weight,
-        max_clusters=args.max_clusters,
-        yake_ngram=args.keyword_ngram,
-        yake_top=args.keyword_count,
-    )
+    try:
+        analyzer = DocumentAnalyzer(
+            path_weight=args.path_weight,
+            max_clusters=args.max_clusters,
+            yake_ngram=args.keyword_ngram,
+            yake_top=args.keyword_count,
+        )
+    except Exception as e:
+        logger.error(f"Failed to initialize analyzer: {e}")
+        return
+
     try:
         folder_structure = analyzer.analyze_directory(path)
     except Exception as e:

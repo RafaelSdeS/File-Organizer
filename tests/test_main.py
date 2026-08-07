@@ -69,6 +69,14 @@ class TestMainCLI(unittest.TestCase):
         self._run(["some/dir", "-y"])
         self.mock_analyzer.organize_files.assert_not_called()
 
+    def test_invalid_max_clusters_does_not_crash(self):
+        """DocumentAnalyzer(max_clusters=2) raises ValueError - main() should log
+        and return cleanly instead of letting the traceback escape."""
+        self.mock_analyzer_cls.side_effect = ValueError("max_clusters must be at least 3")
+        self._run(["some/dir", "--max-clusters", "2", "-y"])
+        self.mock_analyzer.analyze_directory.assert_not_called()
+        self.mock_analyzer.organize_files.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

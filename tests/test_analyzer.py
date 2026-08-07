@@ -38,6 +38,45 @@ class TestDocumentAnalyzer(unittest.TestCase):
         self.assertIsNotNone(self.analyzer.model)
         self.assertIsNotNone(self.analyzer.kw_extractor)
 
+    def test_init_rejects_low_max_clusters(self):
+        """max_clusters < 3 leaves no candidate k for _find_optimal_clusters to test."""
+        with self.assertRaises(ValueError):
+            DocumentAnalyzer(max_clusters=2)
+
+    def test_analyze_folder_reads_nested_files(self):
+        """Regression: os.path.join(folder_path, DirEntry) used to double the path
+        (DirEntry.__fspath__ already returns the full path), so any subfolder
+        containing a readable file raised FileNotFoundError."""
+        root = Path("test_analyze_folder_regression")
+        try:
+            sub = root / "sub"
+            sub.mkdir(parents=True, exist_ok=True)
+            (sub / "note.txt").write_text("hello from a subfolder")
+
+            result = self.analyzer._analyze_folder(str(sub))
+            self.assertIn("note.txt", result["Content"])
+            self.assertIn("hello from a subfolder", result["Content"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_analyze_folder_degrades_on_unreadable_file(self):
+        """A single unreadable file inside a subfolder should not blow up the
+        whole subfolder - it should degrade to filename-only, like the
+        top-level scan in analyze_directory already does."""
+        root = Path("test_analyze_folder_degrades")
+        try:
+            sub = root / "sub"
+            sub.mkdir(parents=True, exist_ok=True)
+            (sub / "good.txt").write_text("fine")
+            (sub / "bad.docx").write_text("not a real docx, will fail to parse")
+
+            result = self.analyzer._analyze_folder(str(sub))
+            self.assertIn("good.txt", result["Content"])
+            self.assertIn("fine", result["Content"])
+            self.assertIn("bad.docx", result["Content"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_analyze_directory(self):
         """Test directory analysis with mocked components"""
         self.mock_model.encode.return_value = np.array(

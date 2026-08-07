@@ -35,7 +35,7 @@ python -m unittest tests.test_analyzer.TestDocumentAnalyzer.test_extract_keyword
 
 Single pipeline, driven from `src/document_analyzer/analyzer.py::DocumentAnalyzer`:
 
-0. **`DocumentAnalyzer(path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5)`** — all four tuning knobs are constructor params (also exposed as CLI flags in `main.py`); defaults match the original hardcoded values.
+0. **`DocumentAnalyzer(path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5)`** — all four tuning knobs are constructor params (also exposed as CLI flags in `main.py`); defaults match the original hardcoded values. `max_clusters < 3` raises `ValueError` immediately (`_find_optimal_clusters`'s candidate range `range(2, max_k)` is empty otherwise, which used to surface as a bare `numpy`/`sklearn` exception).
 
 1. **`analyze_directory(path)`** — top-level entry point.
    - Scans the directory (`os.scandir`, non-recursive at this level for files, but recurses into subfolders via `_analyze_folder`).
@@ -47,7 +47,7 @@ Single pipeline, driven from `src/document_analyzer/analyzer.py::DocumentAnalyze
    - Runs `KMeans` with that k, then `_organize_clusters` names each cluster folder from its top-2 YAKE keywords (falls back to `Cluster_<n>` if no keywords extracted). If two clusters produce the same folder name, their files are merged into that one folder (`setdefault(...).extend(...)`) rather than one cluster's files overwriting the other's.
    - Returns `{folder_name: [original_filenames]}`.
 
-2. **`_analyze_folder(folder_path)`** — recursively walks a subdirectory, concatenating all descendant file names/contents into a single `Content` blob so the whole subfolder is treated as one document for clustering purposes.
+2. **`_analyze_folder(folder_path)`** — recursively walks a subdirectory, concatenating all descendant file names/contents into a single `Content` blob so the whole subfolder is treated as one document for clustering purposes. Uses `entry.path` directly (never `os.path.join(folder_path, entry)` — `DirEntry.__fspath__` already returns the full path, so joining it again used to double the path and made every subfolder containing a readable/audio file raise `FileNotFoundError`, silently dropping that whole subfolder). Per-file read errors are caught here too, same as the top-level scan in `analyze_directory`, degrading to filename-only instead of losing the rest of the subfolder.
 
 3. **`organize_files(folder_structure, source_dir, target_dir=None)`** — creates the cluster folders (under `target_dir`, defaulting to `source_dir`) and moves (`shutil.move`) each original file into its assigned folder — works across filesystems/drives, unlike `os.rename`. This is a real filesystem mutation — moves files out of `source_dir` in place unless `target_dir` is given.
 

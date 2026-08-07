@@ -21,6 +21,8 @@ class DocumentAnalyzer:
     #Uses sentence embeddings for content similarity analysis and YAKE for keyword extraction.
 
     def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5):
+        if max_clusters < 3:
+            raise ValueError("max_clusters must be at least 3 (k=2 needs to be a testable candidate)")
         self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
         self.kw_extractor = yake.KeywordExtractor(lan="en", n=yake_ngram, top=yake_top)
         self.path_weight = path_weight
@@ -157,26 +159,36 @@ class DocumentAnalyzer:
             "Content": "" 
         }
 
-        for file_path in os.scandir(folder_path):
-            full_path = os.path.join(folder_path, file_path)
+        for entry in os.scandir(folder_path):
+            # entry.path is already the full path - os.path.join(folder_path, entry)
+            # would double it, since DirEntry.__fspath__ returns entry.path too.
+            full_path = entry.path
 
-            if os.path.isfile(full_path):
-                _, ext = os.path.splitext(file_path)
+            if entry.is_file():
+                _, ext = os.path.splitext(entry.name)
                 ext = ext.lower()
-                
+
                 if ext in readable_files:
-                    content = read_file(full_path)
-                    file_data["Content"] += (file_path.name + content)
+                    try:
+                        content = read_file(full_path)
+                        file_data["Content"] += (entry.name + content)
+                    except Exception as e:
+                        logger.warning(f"Failed to read file {full_path}: {str(e)}")
+                        file_data["Content"] += entry.name
 
                 elif ext in audio_files:
-                    content = read_audio_metadata(full_path)
-                    file_data["Content"] += (file_path.name + (content or ""))
+                    try:
+                        content = read_audio_metadata(full_path)
+                        file_data["Content"] += (entry.name + (content or ""))
+                    except Exception as e:
+                        logger.warning(f"Failed to read audio file {full_path}: {str(e)}")
+                        file_data["Content"] += entry.name
 
                 else:
-                    file_data["Content"] += file_path.name
+                    file_data["Content"] += entry.name
 
             else:
-#                Recursively process subfolders
+                # Recursively process subfolders
                 subfolder_data = self._analyze_folder(full_path)
                 file_data["Content"] += subfolder_data["Content"]
 
