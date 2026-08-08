@@ -1,29 +1,45 @@
 import argparse
 import logging
+import tomllib
+from pathlib import Path
 
 from .analyzer import DocumentAnalyzer, undo_organize
 
 logger = logging.getLogger(__name__)
 
+CONFIG_PATH = Path.home() / ".config" / "file-organizer.toml"
+
+
+def _load_config():
+    if not CONFIG_PATH.exists():
+        return {}
+    try:
+        with open(CONFIG_PATH, "rb") as f:
+            return tomllib.load(f)
+    except (tomllib.TOMLDecodeError, OSError) as e:
+        logger.warning(f"Ignoring invalid config file {CONFIG_PATH}: {e}")
+        return {}
+
 
 def parse_args():
+    config = _load_config()
     parser = argparse.ArgumentParser(
         description="Cluster and organize files in a directory by content similarity."
     )
     parser.add_argument("path", nargs="?", help="Directory to organize (prompted if omitted)")
-    parser.add_argument("--target-dir", help="Move organized files here instead of in place")
+    parser.add_argument("--target-dir", default=config.get("target_dir"), help="Move organized files here instead of in place")
     parser.add_argument("--dry-run", action="store_true", help="Show the proposed structure without moving files")
     parser.add_argument("-y", "--yes", action="store_true", help="Move files without confirmation prompt")
-    parser.add_argument("--path-weight", type=int, default=2, help="How many times the filename is repeated when weighting embeddings (default: 2)")
-    parser.add_argument("--max-clusters", type=int, default=10, help="Upper bound on the number of clusters to consider (default: 10)")
-    parser.add_argument("--keyword-ngram", type=int, default=2, help="Max n-gram size for YAKE keyword extraction (default: 2)")
-    parser.add_argument("--keyword-count", type=int, default=5, help="Number of keywords YAKE extracts per cluster, top 2 are used for folder names (default: 5)")
+    parser.add_argument("--path-weight", type=int, default=config.get("path_weight", 2), help="How many times the filename is repeated when weighting embeddings (default: 2)")
+    parser.add_argument("--max-clusters", type=int, default=config.get("max_clusters", 10), help="Upper bound on the number of clusters to consider (default: 10)")
+    parser.add_argument("--keyword-ngram", type=int, default=config.get("keyword_ngram", 2), help="Max n-gram size for YAKE keyword extraction (default: 2)")
+    parser.add_argument("--keyword-count", type=int, default=config.get("keyword_count", 5), help="Number of keywords YAKE extracts per cluster, top 2 are used for folder names (default: 5)")
     parser.add_argument("--undo", metavar="MANIFEST", help="Undo a previous run using its manifest JSON file, moving files back to where they started")
-    parser.add_argument("--include-all", action="store_true", help="Don't skip hidden entries or known noise directories (.git, __pycache__, node_modules, etc.) - process everything")
-    parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN", help="Glob pattern to skip (e.g. '*.log'); can be given multiple times")
+    parser.add_argument("--include-all", action="store_true", default=config.get("include_all", False), help="Don't skip hidden entries or known noise directories (.git, __pycache__, node_modules, etc.) - process everything")
+    parser.add_argument("--exclude", action="append", default=list(config.get("exclude", [])), metavar="PATTERN", help="Glob pattern to skip (e.g. '*.log'); can be given multiple times")
     verbosity = parser.add_mutually_exclusive_group()
-    verbosity.add_argument("--verbose", action="store_true", help="Show DEBUG-level logging")
-    verbosity.add_argument("--quiet", action="store_true", help="Only show WARNING-level logging and above")
+    verbosity.add_argument("--verbose", action="store_true", default=config.get("verbose", False), help="Show DEBUG-level logging")
+    verbosity.add_argument("--quiet", action="store_true", default=config.get("quiet", False), help="Only show WARNING-level logging and above")
     return parser.parse_args()
 
 

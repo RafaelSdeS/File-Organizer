@@ -75,9 +75,10 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
       cases the default skip list doesn't cover.
 - [x] **`--verbose`/`--quiet`** — logging level is hardcoded to `INFO` in
       `main.py`; no way to get `DEBUG` detail or quiet it down for scripting.
-- [ ] **A saved-defaults config file** (e.g. `~/.config/file-organizer.toml`,
+- [x] **A saved-defaults config file** (e.g. `~/.config/file-organizer.toml`,
       stdlib `tomllib` — Python 3.11+, already a floor we could require) so
       people don't retype `--path-weight`/`--max-clusters`/etc. every run.
+      `requires-python` bumped to `>=3.11` (CI already ran on 3.11).
 - [ ] **More readable formats** (`.md`, `.csv`, `.rtf`, `.odt`, `.pptx`,
       `.xlsx`) — only if someone actually hits a directory full of these;
       don't build ahead of a real need.

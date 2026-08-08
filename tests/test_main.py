@@ -1,6 +1,8 @@
 import logging
 import os
 import sys
+import tempfile
+from pathlib import Path
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -14,6 +16,16 @@ from src.document_analyzer import main as main_module
 
 class TestMainCLI(unittest.TestCase):
     def setUp(self):
+        # Point CONFIG_PATH at a nonexistent file inside a fresh temp dir by
+        # default, so tests never depend on (or write to) the real
+        # ~/.config/file-organizer.toml on the host running the tests.
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp_dir.cleanup)
+        self.config_path = Path(self.tmp_dir.name) / "file-organizer.toml"
+        config_patcher = patch('src.document_analyzer.main.CONFIG_PATH', self.config_path)
+        config_patcher.start()
+        self.addCleanup(config_patcher.stop)
+
         patcher = patch('src.document_analyzer.main.DocumentAnalyzer')
         self.mock_analyzer_cls = patcher.start()
         self.addCleanup(patcher.stop)
@@ -96,6 +108,39 @@ class TestMainCLI(unittest.TestCase):
         self.mock_analyzer.analyze_directory.side_effect = ValueError("bad path")
         self._run(["some/dir", "-y"])
         self.mock_analyzer.organize_files.assert_not_called()
+
+    def test_config_file_provides_defaults(self):
+        self.config_path.write_text("path_weight = 7\nmax_clusters = 4\n")
+        self._run(["some/dir", "-y"])
+        self.mock_analyzer_cls.assert_called_once_with(
+            path_weight=7, max_clusters=4, yake_ngram=2, yake_top=5,
+            skip_noise=True, exclude_patterns=[]
+        )
+
+    def test_cli_flag_overrides_config_file(self):
+        self.config_path.write_text("path_weight = 7\n")
+        self._run(["some/dir", "-y", "--path-weight", "9"])
+        self.mock_analyzer_cls.assert_called_once_with(
+            path_weight=9, max_clusters=10, yake_ngram=2, yake_top=5,
+            skip_noise=True, exclude_patterns=[]
+        )
+
+    def test_missing_config_file_uses_hardcoded_defaults(self):
+        # self.config_path is never written to in setUp - exercises the
+        # not-found branch of _load_config.
+        self._run(["some/dir", "-y"])
+        self.mock_analyzer_cls.assert_called_once_with(
+            path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
+            skip_noise=True, exclude_patterns=[]
+        )
+
+    def test_malformed_config_file_warns_and_falls_back(self):
+        self.config_path.write_text("this is not valid toml [[[")
+        self._run(["some/dir", "-y"])
+        self.mock_analyzer_cls.assert_called_once_with(
+            path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
+            skip_noise=True, exclude_patterns=[]
+        )
 
     def test_undo_flag_calls_undo_organize_and_skips_pipeline(self):
         with patch('src.document_analyzer.main.undo_organize') as mock_undo:

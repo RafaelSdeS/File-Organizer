@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "AI-powered CLI that clusters and organizes files by content similarity"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "pandas==3.0.5",
     "scikit-learn==1.9.0",

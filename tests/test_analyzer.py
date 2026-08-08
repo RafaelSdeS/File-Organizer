@@ -223,10 +223,12 @@ class TestDocumentAnalyzer(unittest.TestCase):
         """Test optimal cluster detection"""
         # Create sample embeddings
         embeddings = np.random.rand(100, 10).astype('float32')
-        
+
         optimal_k = self.analyzer._find_optimal_clusters(embeddings)
         self.assertGreater(optimal_k, 1)
-        self.assertLess(optimal_k, 10)  # max_k default is 10
+        # max_k default is 10, inclusive since the off-by-one fix - k=10 is
+        # now a legitimately reachable candidate, not just k<10.
+        self.assertLessEqual(optimal_k, 10)
 
     def test_find_optimal_clusters_small_input(self):
         """Regression: 2-4 embeddings used to crash (elbow method needs >=3
