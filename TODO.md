@@ -51,7 +51,7 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
 
 ## Correctness
 
-- [ ] **Off-by-one in cluster-count search.** `_find_optimal_clusters`
+- [x] **Off-by-one in cluster-count search.** `_find_optimal_clusters`
       (`analyzer.py:197`) builds `K = range(2, min(len(embeddings), max_k))`
       (`analyzer.py:205`) — `range` excludes its upper bound, so with the
       default `max_clusters=10` the search only ever tests k=2..9, never k=10.
@@ -59,7 +59,7 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
       `range(2, min(len(embeddings), max_k) + 1)`, then add a test asserting the
       configured max is reachable.
 
-- [ ] **No noise filtering when scanning.** `analyze_directory` and
+- [x] **No noise filtering when scanning.** `analyze_directory` and
       `_analyze_folder` process every `os.scandir` entry, including dotfiles,
       `.git/`, `__pycache__/`, `node_modules/`, `.DS_Store`, etc. Pointing this
       at a real project directory embeds and clusters junk. Add a default skip

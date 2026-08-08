@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
-from src.document_analyzer.analyzer import DocumentAnalyzer, undo_organize, ORGANIZED_MARKER
+from src.document_analyzer.analyzer import DocumentAnalyzer, undo_organize, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES
 from src.document_analyzer.utils import read_file, analyze_document_content, create_weighted_text
 
 class TestDocumentAnalyzer(unittest.TestCase):
@@ -145,6 +145,53 @@ class TestDocumentAnalyzer(unittest.TestCase):
         finally:
             shutil.rmtree(test_dir, ignore_errors=True)
 
+    def test_analyze_directory_skips_hidden_and_noise_entries_by_default(self):
+        """Dotfiles/dotdirs and known noise dirs (__pycache__, node_modules)
+        shouldn't be embedded and clustered as if they were real documents."""
+        self.mock_model.encode.return_value = np.array([[0, 0], [1, 1], [2, 2]])
+        self.mock_kw_extractor.extract_keywords.return_value = [('mock_keyword', 0.5)]
+
+        test_dir = Path("test_directory_noise")
+        try:
+            test_dir.mkdir(exist_ok=True)
+            for name in ("test1.pdf", "test2.pdf", "test3.pdf"):
+                (test_dir / name).touch(exist_ok=True)
+
+            (test_dir / ".hidden.txt").write_text("dotfile, should be skipped")
+            (test_dir / ".git").mkdir()
+            (test_dir / ".git" / "config").write_text("git internals")
+            for noise_name in DEFAULT_SKIP_NAMES:
+                noise_dir = test_dir / noise_name
+                noise_dir.mkdir()
+                (noise_dir / "junk.txt").write_text("noise")
+
+            self.analyzer.analyze_directory(str(test_dir))
+
+            encoded_texts = self.mock_model.encode.call_args[0][0]
+            self.assertEqual(len(encoded_texts), 3)
+        finally:
+            shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_analyze_directory_include_all_disables_noise_filtering(self):
+        """skip_noise=False (--include-all) should process hidden entries too."""
+        self.mock_model.encode.return_value = np.array([[0, 0], [1, 1]])
+        self.mock_kw_extractor.extract_keywords.return_value = [('mock_keyword', 0.5)]
+
+        analyzer = DocumentAnalyzer(skip_noise=False)
+
+        test_dir = Path("test_directory_noise_included")
+        try:
+            test_dir.mkdir(exist_ok=True)
+            (test_dir / "test1.pdf").touch()
+            (test_dir / ".hidden.txt").write_text("dotfile")
+
+            analyzer.analyze_directory(str(test_dir))
+
+            encoded_texts = self.mock_model.encode.call_args[0][0]
+            self.assertEqual(len(encoded_texts), 2)
+        finally:
+            shutil.rmtree(test_dir, ignore_errors=True)
+
     def test_analyze_directory_with_exceptions(self):
         """Test directory analysis raises for a missing directory"""
         with self.assertRaises(FileNotFoundError):
@@ -167,6 +214,19 @@ class TestDocumentAnalyzer(unittest.TestCase):
             optimal_k = self.analyzer._find_optimal_clusters(embeddings)
             self.assertGreaterEqual(optimal_k, 1)
             self.assertLess(optimal_k, n if n > 1 else 2)
+
+    def test_find_optimal_clusters_reaches_configured_max(self):
+        """Regression: K = range(2, min(n, max_k)) excluded max_k itself, so
+        --max-clusters never tested its own value. With 4 well-separated,
+        tight true clusters and max_k=4, k=4 must be reachable and win."""
+        rng = np.random.default_rng(0)
+        centers = [(0, 0), (1000, 1000), (2000, 2000), (3000, 3000)]
+        embeddings = np.vstack([
+            rng.normal(loc=center, scale=0.1, size=(5, 2)) for center in centers
+        ])
+
+        optimal_k = self.analyzer._find_optimal_clusters(embeddings, max_k=4)
+        self.assertEqual(optimal_k, 4)
 
     def test_organize_clusters(self):
         """Test cluster organization"""

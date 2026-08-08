@@ -61,7 +61,13 @@ class TestMainCLI(unittest.TestCase):
             "--keyword-count", "3",
         ])
         self.mock_analyzer_cls.assert_called_once_with(
-            path_weight=3, max_clusters=6, yake_ngram=1, yake_top=3
+            path_weight=3, max_clusters=6, yake_ngram=1, yake_top=3, skip_noise=True
+        )
+
+    def test_include_all_disables_skip_noise(self):
+        self._run(["some/dir", "-y", "--include-all"])
+        self.mock_analyzer_cls.assert_called_once_with(
+            path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, skip_noise=False
         )
 
     def test_analysis_failure_does_not_move_files(self):

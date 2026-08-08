@@ -22,18 +22,29 @@ audio_files = [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a", ".aiff",
 # recognizes and skips its own output instead of re-clustering it.
 ORGANIZED_MARKER = ".file_organizer_created"
 MANIFEST_PREFIX = ".file_organizer_manifest_"
+
+# Known-noise directory/file names that aren't already caught by the
+# hidden-entry (dot-prefix) check - e.g. .git, .DS_Store are dotfiles already.
+DEFAULT_SKIP_NAMES = {"__pycache__", "node_modules"}
+
+
+def _is_noise_entry(name):
+    return name.startswith(".") or name in DEFAULT_SKIP_NAMES
+
+
 class DocumentAnalyzer:
 
     #Main class for analyzing and organizing documents using AI-powered clustering.
     #Uses sentence embeddings for content similarity analysis and YAKE for keyword extraction.
 
-    def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5):
+    def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, skip_noise=True):
         if max_clusters < 3:
             raise ValueError("max_clusters must be at least 3 (k=2 needs to be a testable candidate)")
         self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
         self.kw_extractor = yake.KeywordExtractor(lan="en", n=yake_ngram, top=yake_top)
         self.path_weight = path_weight
         self.max_clusters = max_clusters
+        self.skip_noise = skip_noise
 
     def analyze_directory(self, path):
         """
@@ -67,6 +78,8 @@ class DocumentAnalyzer:
             
             with os.scandir(path) as dir_iter:
                 for entry in dir_iter:
+                    if self.skip_noise and _is_noise_entry(entry.name):
+                        continue
                     try:
                         if entry.is_file():
                             _, ext = os.path.splitext(entry.name)
@@ -173,6 +186,9 @@ class DocumentAnalyzer:
         }
 
         for entry in os.scandir(folder_path):
+            if self.skip_noise and _is_noise_entry(entry.name):
+                continue
+
             # entry.path is already the full path - os.path.join(folder_path, entry)
             # would double it, since DirEntry.__fspath__ returns entry.path too.
             full_path = entry.path
@@ -218,7 +234,11 @@ class DocumentAnalyzer:
         distortions = []
         silhouette_scores = []
         calinski_scores = []
-        K = range(2, min(len(embeddings), max_k))
+        # Upper bound is inclusive of max_k (previously excluded it, so
+        # --max-clusters never actually tested its own value). Still capped
+        # at len(embeddings) - 1: silhouette_score requires strictly fewer
+        # clusters than samples, so k == n would crash mid-loop.
+        K = range(2, min(max_k, len(embeddings) - 1) + 1)
 
         # Calculate multiple metrics
         for k in K:
