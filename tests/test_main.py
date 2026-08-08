@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 
@@ -61,14 +62,35 @@ class TestMainCLI(unittest.TestCase):
             "--keyword-count", "3",
         ])
         self.mock_analyzer_cls.assert_called_once_with(
-            path_weight=3, max_clusters=6, yake_ngram=1, yake_top=3, skip_noise=True
+            path_weight=3, max_clusters=6, yake_ngram=1, yake_top=3,
+            skip_noise=True, exclude_patterns=[]
         )
 
     def test_include_all_disables_skip_noise(self):
         self._run(["some/dir", "-y", "--include-all"])
         self.mock_analyzer_cls.assert_called_once_with(
-            path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, skip_noise=False
+            path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
+            skip_noise=False, exclude_patterns=[]
         )
+
+    def test_exclude_patterns_passed_to_analyzer(self):
+        self._run(["some/dir", "-y", "--exclude", "*.log", "--exclude", "tmp_*"])
+        self.mock_analyzer_cls.assert_called_once_with(
+            path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
+            skip_noise=True, exclude_patterns=["*.log", "tmp_*"]
+        )
+
+    def test_verbose_sets_debug_level(self):
+        self._run(["some/dir", "-y", "--verbose"])
+        self.assertEqual(logging.getLogger().getEffectiveLevel(), logging.DEBUG)
+
+    def test_quiet_sets_warning_level(self):
+        self._run(["some/dir", "-y", "--quiet"])
+        self.assertEqual(logging.getLogger().getEffectiveLevel(), logging.WARNING)
+
+    def test_default_verbosity_is_info(self):
+        self._run(["some/dir", "-y"])
+        self.assertEqual(logging.getLogger().getEffectiveLevel(), logging.INFO)
 
     def test_analysis_failure_does_not_move_files(self):
         self.mock_analyzer.analyze_directory.side_effect = ValueError("bad path")

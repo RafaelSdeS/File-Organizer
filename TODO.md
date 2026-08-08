@@ -71,9 +71,9 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
 - [x] **Undo/manifest support** — `--undo` done (see Critical above). Not
       done: `--history` to list past runs (would mean scanning target dirs
       for `.file_organizer_manifest_*.json` files, or keeping a central log).
-- [ ] **`--exclude` pattern(s)** for the noise-filtering item above, for
+- [x] **`--exclude` pattern(s)** for the noise-filtering item above, for
       cases the default skip list doesn't cover.
-- [ ] **`--verbose`/`--quiet`** — logging level is hardcoded to `INFO` in
+- [x] **`--verbose`/`--quiet`** — logging level is hardcoded to `INFO` in
       `main.py`; no way to get `DEBUG` detail or quiet it down for scripting.
 - [ ] **A saved-defaults config file** (e.g. `~/.config/file-organizer.toml`,
       stdlib `tomllib` — Python 3.11+, already a floor we could require) so

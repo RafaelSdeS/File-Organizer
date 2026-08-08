@@ -192,6 +192,28 @@ class TestDocumentAnalyzer(unittest.TestCase):
         finally:
             shutil.rmtree(test_dir, ignore_errors=True)
 
+    def test_analyze_directory_exclude_pattern_applies_regardless_of_skip_noise(self):
+        """--exclude patterns are an explicit user ask, so they should still
+        apply even with skip_noise=False (--include-all)."""
+        self.mock_model.encode.return_value = np.array([[0, 0], [1, 1]])
+        self.mock_kw_extractor.extract_keywords.return_value = [('mock_keyword', 0.5)]
+
+        analyzer = DocumentAnalyzer(skip_noise=False, exclude_patterns=["*.log"])
+
+        test_dir = Path("test_directory_exclude")
+        try:
+            test_dir.mkdir(exist_ok=True)
+            (test_dir / "test1.pdf").touch()
+            (test_dir / "test2.pdf").touch()
+            (test_dir / "debug.log").write_text("noisy log output")
+
+            analyzer.analyze_directory(str(test_dir))
+
+            encoded_texts = self.mock_model.encode.call_args[0][0]
+            self.assertEqual(len(encoded_texts), 2)
+        finally:
+            shutil.rmtree(test_dir, ignore_errors=True)
+
     def test_analyze_directory_with_exceptions(self):
         """Test directory analysis raises for a missing directory"""
         with self.assertRaises(FileNotFoundError):

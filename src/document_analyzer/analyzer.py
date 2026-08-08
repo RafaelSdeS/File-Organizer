@@ -7,6 +7,7 @@ from collections import Counter
 import os
 import shutil
 import json
+import fnmatch
 from datetime import datetime
 import numpy as np
 import logging
@@ -28,8 +29,10 @@ MANIFEST_PREFIX = ".file_organizer_manifest_"
 DEFAULT_SKIP_NAMES = {"__pycache__", "node_modules"}
 
 
-def _is_noise_entry(name):
-    return name.startswith(".") or name in DEFAULT_SKIP_NAMES
+def _is_noise_entry(name, skip_noise, exclude_patterns):
+    if skip_noise and (name.startswith(".") or name in DEFAULT_SKIP_NAMES):
+        return True
+    return any(fnmatch.fnmatch(name, pattern) for pattern in exclude_patterns)
 
 
 class DocumentAnalyzer:
@@ -37,7 +40,7 @@ class DocumentAnalyzer:
     #Main class for analyzing and organizing documents using AI-powered clustering.
     #Uses sentence embeddings for content similarity analysis and YAKE for keyword extraction.
 
-    def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, skip_noise=True):
+    def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, skip_noise=True, exclude_patterns=None):
         if max_clusters < 3:
             raise ValueError("max_clusters must be at least 3 (k=2 needs to be a testable candidate)")
         self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
@@ -45,6 +48,7 @@ class DocumentAnalyzer:
         self.path_weight = path_weight
         self.max_clusters = max_clusters
         self.skip_noise = skip_noise
+        self.exclude_patterns = exclude_patterns or []
 
     def analyze_directory(self, path):
         """
@@ -78,7 +82,7 @@ class DocumentAnalyzer:
             
             with os.scandir(path) as dir_iter:
                 for entry in dir_iter:
-                    if self.skip_noise and _is_noise_entry(entry.name):
+                    if _is_noise_entry(entry.name, self.skip_noise, self.exclude_patterns):
                         continue
                     try:
                         if entry.is_file():
@@ -186,7 +190,7 @@ class DocumentAnalyzer:
         }
 
         for entry in os.scandir(folder_path):
-            if self.skip_noise and _is_noise_entry(entry.name):
+            if _is_noise_entry(entry.name, self.skip_noise, self.exclude_patterns):
                 continue
 
             # entry.path is already the full path - os.path.join(folder_path, entry)

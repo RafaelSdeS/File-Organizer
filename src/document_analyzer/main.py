@@ -3,7 +3,6 @@ import logging
 
 from .analyzer import DocumentAnalyzer, undo_organize
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -21,11 +20,18 @@ def parse_args():
     parser.add_argument("--keyword-count", type=int, default=5, help="Number of keywords YAKE extracts per cluster, top 2 are used for folder names (default: 5)")
     parser.add_argument("--undo", metavar="MANIFEST", help="Undo a previous run using its manifest JSON file, moving files back to where they started")
     parser.add_argument("--include-all", action="store_true", help="Don't skip hidden entries or known noise directories (.git, __pycache__, node_modules, etc.) - process everything")
+    parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN", help="Glob pattern to skip (e.g. '*.log'); can be given multiple times")
+    verbosity = parser.add_mutually_exclusive_group()
+    verbosity.add_argument("--verbose", action="store_true", help="Show DEBUG-level logging")
+    verbosity.add_argument("--quiet", action="store_true", help="Only show WARNING-level logging and above")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+
+    level = logging.DEBUG if args.verbose else logging.WARNING if args.quiet else logging.INFO
+    logging.basicConfig(level=level, format="%(levelname)s: %(message)s", force=True)
 
     if args.undo:
         try:
@@ -43,6 +49,7 @@ def main():
             yake_ngram=args.keyword_ngram,
             yake_top=args.keyword_count,
             skip_noise=not args.include_all,
+            exclude_patterns=args.exclude,
         )
     except Exception as e:
         logger.error(f"Failed to initialize analyzer: {e}")
