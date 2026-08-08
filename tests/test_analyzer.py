@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
-from src.document_analyzer.analyzer import DocumentAnalyzer
+from src.document_analyzer.analyzer import DocumentAnalyzer, undo_organize, ORGANIZED_MARKER
 from src.document_analyzer.utils import read_file, analyze_document_content, create_weighted_text
 
 class TestDocumentAnalyzer(unittest.TestCase):
@@ -102,6 +102,46 @@ class TestDocumentAnalyzer(unittest.TestCase):
 
             self.mock_model.encode.assert_called_once()
             self.assertEqual(self.mock_kw_extractor.extract_keywords.call_count, 2)
+        finally:
+            shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_analyze_folder_skips_symlinked_directory_cycle(self):
+        """Regression: a symlinked directory pointing back at an ancestor used
+        to recurse forever (entry.is_dir() follows symlinks by default)."""
+        root = Path("test_analyze_folder_symlink_cycle")
+        try:
+            root.mkdir(exist_ok=True)
+            (root / "note.txt").write_text("hello")
+            loop = root / "loop"
+            loop.symlink_to(root, target_is_directory=True)
+
+            result = self.analyzer._analyze_folder(str(root))
+            self.assertIn("note.txt", result["Content"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_analyze_directory_skips_previously_organized_folder(self):
+        """A folder bearing organize_files' marker file is this tool's own
+        prior output - it should be skipped, not re-clustered as a document."""
+        self.mock_model.encode.return_value = np.array([[0, 0], [1, 1], [2, 2]])
+        self.mock_kw_extractor.extract_keywords.return_value = [('mock_keyword', 0.5)]
+
+        test_dir = Path("test_directory_marker")
+        try:
+            test_dir.mkdir(exist_ok=True)
+            for name in ("test1.pdf", "test2.pdf", "test3.pdf"):
+                (test_dir / name).touch(exist_ok=True)
+
+            organized = test_dir / "Cluster_old"
+            organized.mkdir()
+            (organized / ORGANIZED_MARKER).touch()
+            (organized / "leftover.txt").write_text("should not be read")
+
+            self.analyzer.analyze_directory(str(test_dir))
+
+            encoded_texts = self.mock_model.encode.call_args[0][0]
+            self.assertEqual(len(encoded_texts), 3)
+            self.assertFalse(any("leftover" in t for t in encoded_texts))
         finally:
             shutil.rmtree(test_dir, ignore_errors=True)
 
@@ -214,10 +254,56 @@ class TestDocumentAnalyzer(unittest.TestCase):
         try:
             source_dir.mkdir(exist_ok=True)
             # No files created - "missing.txt" doesn't exist on disk.
-            self.analyzer.organize_files(
+            result = self.analyzer.organize_files(
                 {"Cluster_one": ["missing.txt"]}, str(source_dir)
             )
             self.assertFalse((source_dir / "Cluster_one" / "missing.txt").exists())
+            self.assertIsNone(result)  # nothing moved -> no manifest written
+        finally:
+            shutil.rmtree(source_dir, ignore_errors=True)
+
+    def test_organize_files_skips_existing_destination(self):
+        """shutil.move -> os.rename on POSIX silently clobbers an existing
+        destination; organize_files must check first and skip instead."""
+        source_dir = Path("test_organize_overwrite_source")
+        try:
+            source_dir.mkdir(exist_ok=True)
+            (source_dir / "a.txt").write_text("new content")
+
+            dest_dir = source_dir / "Cluster_one"
+            dest_dir.mkdir()
+            (dest_dir / "a.txt").write_text("original content")
+
+            self.analyzer.organize_files({"Cluster_one": ["a.txt"]}, str(source_dir))
+
+            self.assertEqual((dest_dir / "a.txt").read_text(), "original content")
+            self.assertTrue((source_dir / "a.txt").exists())
+        finally:
+            shutil.rmtree(source_dir, ignore_errors=True)
+
+    def test_organize_files_writes_manifest_and_undo_restores(self):
+        """organize_files should record moves in a manifest that undo_organize
+        can replay in reverse."""
+        source_dir = Path("test_organize_manifest_source")
+        try:
+            source_dir.mkdir(exist_ok=True)
+            (source_dir / "a.txt").write_text("a")
+
+            manifest_path = self.analyzer.organize_files(
+                {"Cluster_one": ["a.txt"]}, str(source_dir)
+            )
+
+            self.assertIsNotNone(manifest_path)
+            self.assertTrue(os.path.exists(manifest_path))
+
+            dest_file = source_dir / "Cluster_one" / "a.txt"
+            self.assertTrue(dest_file.exists())
+            self.assertFalse((source_dir / "a.txt").exists())
+
+            undo_organize(manifest_path)
+
+            self.assertTrue((source_dir / "a.txt").exists())
+            self.assertFalse(dest_file.exists())
         finally:
             shutil.rmtree(source_dir, ignore_errors=True)
 

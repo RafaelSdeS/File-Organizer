@@ -69,6 +69,12 @@ class TestMainCLI(unittest.TestCase):
         self._run(["some/dir", "-y"])
         self.mock_analyzer.organize_files.assert_not_called()
 
+    def test_undo_flag_calls_undo_organize_and_skips_pipeline(self):
+        with patch('src.document_analyzer.main.undo_organize') as mock_undo:
+            self._run(["--undo", "manifest.json"])
+        mock_undo.assert_called_once_with("manifest.json")
+        self.mock_analyzer_cls.assert_not_called()
+
     def test_invalid_max_clusters_does_not_crash(self):
         """DocumentAnalyzer(max_clusters=2) raises ValueError - main() should log
         and return cleanly instead of letting the traceback escape."""

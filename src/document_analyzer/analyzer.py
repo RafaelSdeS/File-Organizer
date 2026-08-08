@@ -6,6 +6,8 @@ from sklearn.cluster import KMeans
 from collections import Counter
 import os
 import shutil
+import json
+from datetime import datetime
 import numpy as np
 import logging
 
@@ -15,6 +17,11 @@ logger = logging.getLogger(__name__)
 
 readable_files = [".pdf", ".txt", ".docx", ".xml"]
 audio_files = [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a", ".aiff", ".opus"]
+
+# Dropped into every cluster folder organize_files creates, so a later run
+# recognizes and skips its own output instead of re-clustering it.
+ORGANIZED_MARKER = ".file_organizer_created"
+MANIFEST_PREFIX = ".file_organizer_manifest_"
 class DocumentAnalyzer:
 
     #Main class for analyzing and organizing documents using AI-powered clustering.
@@ -96,8 +103,14 @@ class DocumentAnalyzer:
                                     "Content": None
                                 }
                         else:
+                            if entry.is_symlink():
+                                logger.info(f"Skipping symlinked directory: {entry.name}")
+                                continue
+                            if os.path.exists(os.path.join(entry.path, ORGANIZED_MARKER)):
+                                logger.info(f"Skipping previously organized folder: {entry.name}")
+                                continue
                             file_data = self._analyze_folder(entry)
-                        
+
                         files_data.append(file_data)
                     
                     except Exception as e:
@@ -188,6 +201,9 @@ class DocumentAnalyzer:
                     file_data["Content"] += entry.name
 
             else:
+                if entry.is_symlink():
+                    logger.warning(f"Skipping symlinked directory: {full_path}")
+                    continue
                 # Recursively process subfolders
                 subfolder_data = self._analyze_folder(full_path)
                 file_data["Content"] += subfolder_data["Content"]
@@ -265,25 +281,68 @@ class DocumentAnalyzer:
     
     def organize_files(self, folder_structure, source_dir, target_dir=None):
             target_dir = target_dir or source_dir
-    
+
             print(f"\nCreating directories in: {target_dir}")
             # Create all necessary directories
             for folder_name in folder_structure.keys():
                 folder_path = os.path.join(target_dir, folder_name)
                 os.makedirs(folder_path, exist_ok=True)
-                
+                # Marks this as a folder the tool created, so a later run on
+                # the same directory skips it instead of re-clustering it.
+                with open(os.path.join(folder_path, ORGANIZED_MARKER), "w"):
+                    pass
+
             # Move files to their respective folders
+            manifest = []
             for folder_name, files in folder_structure.items():
                 target_folder = os.path.join(target_dir, folder_name)
                 for file in files:
                     source_path = os.path.join(source_dir, file)
-                    
-                    if os.path.exists(source_path):
-                        destination_path = os.path.join(target_folder, file)
-                        
-                        try:
-                            shutil.move(source_path, destination_path)
-                        except FileExistsError:
-                            print(f"Warning: '{file}' already exists in {target_folder}.")
-                        except Exception as e:
-                            print(f"Error while moving {file}: {str(e)}")
+
+                    if not os.path.exists(source_path):
+                        continue
+
+                    destination_path = os.path.join(target_folder, file)
+                    # shutil.move -> os.rename on POSIX silently clobbers an
+                    # existing destination with no error, so check first
+                    # instead of relying on FileExistsError (Windows-only).
+                    if os.path.exists(destination_path):
+                        print(f"Warning: '{file}' already exists in {target_folder}, skipping to avoid overwriting it.")
+                        continue
+
+                    try:
+                        shutil.move(source_path, destination_path)
+                        manifest.append({"source": source_path, "destination": destination_path})
+                    except Exception as e:
+                        print(f"Error while moving {file}: {str(e)}")
+
+            if not manifest:
+                return None
+
+            manifest_path = os.path.join(target_dir, f"{MANIFEST_PREFIX}{datetime.now():%Y%m%d-%H%M%S}.json")
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f, indent=2)
+            print(f"\nManifest written to {manifest_path}")
+            print(f"Undo with: organize-files --undo {manifest_path}")
+
+            return manifest_path
+
+
+def undo_organize(manifest_path):
+    """Reverses a previous organize_files run using its manifest JSON."""
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+
+    for entry in manifest:
+        source, destination = entry["source"], entry["destination"]
+
+        if not os.path.exists(destination):
+            print(f"Warning: '{destination}' not found, skipping.")
+            continue
+        if os.path.exists(source):
+            print(f"Warning: '{source}' already exists, skipping restore of '{destination}'.")
+            continue
+
+        os.makedirs(os.path.dirname(source) or ".", exist_ok=True)
+        shutil.move(destination, source)
+        print(f"Restored: {destination} -> {source}")

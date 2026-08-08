@@ -15,7 +15,7 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
 
 ## Critical — data loss / crash risks
 
-- [ ] **File moves silently overwrite existing files on Linux/Mac.**
+- [x] **File moves silently overwrite existing files on Linux/Mac.**
       Verified: `shutil.move` on POSIX uses `os.rename`, which clobbers an
       existing destination with zero error and zero warning. The
       `except FileExistsError` handler in `organize_files`
@@ -27,21 +27,21 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
       (or rename with a suffix) instead of relying on an exception that mostly
       doesn't fire.
 
-- [ ] **No undo for a destructive operation.** `organize_files` moves files
+- [x] **No undo for a destructive operation.** `organize_files` moves files
       with no record of where they came from. One typo'd `--target-dir` or an
       unwanted clustering result and there's no way back except manually
       reconstructing the original layout. Write a manifest (JSON: original path
       → new path) next to the run, and add an `organize-files --undo <manifest>`
       path that moves everything back.
 
-- [ ] **Symlink cycles crash `_analyze_folder`.** Verified: a symlinked
+- [x] **Symlink cycles crash `_analyze_folder`.** Verified: a symlinked
       directory pointing back at an ancestor causes unbounded recursion (tested
       — it recurses forever until Python hits `RecursionError`). `entry.is_dir()`
       follows symlinks by default. Fix: either skip symlinked directories
       entirely (`entry.is_dir(follow_symlinks=False)` check) or track visited
       real paths (`os.path.realpath`) and stop recursing on repeats.
 
-- [ ] **Re-running on an already-organized directory reprocesses its own
+- [x] **Re-running on an already-organized directory reprocesses its own
       output.** Nothing distinguishes a `Cluster_X` folder created by a previous
       run from a real subfolder — running the tool twice on the same directory
       clusters the previous run's output folders as if they were fresh
@@ -68,8 +68,9 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
 
 ## Features (local-only, keep them lightweight — stdlib/already-installed deps first)
 
-- [ ] **Undo/manifest support** — see Critical above; listing again because
-      it doubles as a feature (`--undo`, maybe `--history` to list past runs).
+- [x] **Undo/manifest support** — `--undo` done (see Critical above). Not
+      done: `--history` to list past runs (would mean scanning target dirs
+      for `.file_organizer_manifest_*.json` files, or keeping a central log).
 - [ ] **`--exclude` pattern(s)** for the noise-filtering item above, for
       cases the default skip list doesn't cover.
 - [ ] **`--verbose`/`--quiet`** — logging level is hardcoded to `INFO` in
