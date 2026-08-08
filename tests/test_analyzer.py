@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
 from src.document_analyzer.analyzer import DocumentAnalyzer, undo_organize, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES
-from src.document_analyzer.utils import read_file, analyze_document_content, create_weighted_text
+from src.document_analyzer.utils import read_file, create_weighted_text
 
 class TestDocumentAnalyzer(unittest.TestCase):
     def setUp(self):
@@ -277,14 +277,6 @@ class TestDocumentAnalyzer(unittest.TestCase):
         keywords = self.analyzer._extract_keywords(text_list)
 
         self.assertEqual(keywords, ['keyword1', 'keyword2'])
-        
-    def test_analyze_document_content(self):
-        """Test document content analysis"""
-        text = "This is a test document.\n\nWith multiple sections."
-        length = analyze_document_content(text)
-        
-        self.assertGreater(length, 1000)  # Base length
-        self.assertLess(length, 4000)  # Should be less than max length
         
     def test_create_weighted_text(self):
         """Test weighted text creation"""

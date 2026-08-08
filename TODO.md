@@ -89,9 +89,10 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
       after this TODO) — `main` is ahead of `origin/main` and the new
       `.github/workflows/tests.yml` has never actually run, so CI going green is
       unverified, not confirmed.
-- [ ] **Delete or wire in `analyze_document_content`** in `utils.py:116` —
+- [x] **Delete or wire in `analyze_document_content`** in `utils.py:116` —
       computes a suggested extraction length but is never called anywhere in the
-      pipeline. Dead code; either use it or remove it.
+      pipeline. Dead code; either use it or remove it. Deleted (no caller, no
+      stated need to wire it in).
 
 ## Explicitly not doing (considered, rejected — don't re-propose without new info)
 
