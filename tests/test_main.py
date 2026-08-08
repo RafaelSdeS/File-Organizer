@@ -75,21 +75,28 @@ class TestMainCLI(unittest.TestCase):
         ])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=3, max_clusters=6, yake_ngram=1, yake_top=3,
-            skip_noise=True, exclude_patterns=[]
+            skip_noise=True, exclude_patterns=[], lang="en"
         )
 
     def test_include_all_disables_skip_noise(self):
         self._run(["some/dir", "-y", "--include-all"])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
-            skip_noise=False, exclude_patterns=[]
+            skip_noise=False, exclude_patterns=[], lang="en"
         )
 
     def test_exclude_patterns_passed_to_analyzer(self):
         self._run(["some/dir", "-y", "--exclude", "*.log", "--exclude", "tmp_*"])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
-            skip_noise=True, exclude_patterns=["*.log", "tmp_*"]
+            skip_noise=True, exclude_patterns=["*.log", "tmp_*"], lang="en"
+        )
+
+    def test_lang_passed_to_analyzer(self):
+        self._run(["some/dir", "-y", "--lang", "pt"])
+        self.mock_analyzer_cls.assert_called_once_with(
+            path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
+            skip_noise=True, exclude_patterns=[], lang="pt"
         )
 
     def test_verbose_sets_debug_level(self):
@@ -114,7 +121,7 @@ class TestMainCLI(unittest.TestCase):
         self._run(["some/dir", "-y"])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=7, max_clusters=4, yake_ngram=2, yake_top=5,
-            skip_noise=True, exclude_patterns=[]
+            skip_noise=True, exclude_patterns=[], lang="en"
         )
 
     def test_cli_flag_overrides_config_file(self):
@@ -122,7 +129,7 @@ class TestMainCLI(unittest.TestCase):
         self._run(["some/dir", "-y", "--path-weight", "9"])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=9, max_clusters=10, yake_ngram=2, yake_top=5,
-            skip_noise=True, exclude_patterns=[]
+            skip_noise=True, exclude_patterns=[], lang="en"
         )
 
     def test_missing_config_file_uses_hardcoded_defaults(self):
@@ -131,7 +138,7 @@ class TestMainCLI(unittest.TestCase):
         self._run(["some/dir", "-y"])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
-            skip_noise=True, exclude_patterns=[]
+            skip_noise=True, exclude_patterns=[], lang="en"
         )
 
     def test_malformed_config_file_warns_and_falls_back(self):
@@ -139,7 +146,7 @@ class TestMainCLI(unittest.TestCase):
         self._run(["some/dir", "-y"])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
-            skip_noise=True, exclude_patterns=[]
+            skip_noise=True, exclude_patterns=[], lang="en"
         )
 
     def test_undo_flag_calls_undo_organize_and_skips_pipeline(self):

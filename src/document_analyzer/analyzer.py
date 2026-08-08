@@ -3,7 +3,6 @@ from sklearn.metrics import calinski_harabasz_score, silhouette_score
 import yake
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
-from collections import Counter
 import os
 import shutil
 import json
@@ -15,6 +14,16 @@ import logging
 from .utils import create_weighted_text, read_file, read_audio_metadata
 
 logger = logging.getLogger(__name__)
+
+# Multilingual by default: all-MiniLM-L6-v2 is English-only, so non-English
+# documents got near-random embeddings and therefore near-random clusters.
+# e5-small over paraphrase-multilingual-MiniLM-L12-v2 for the context window:
+# 512 tokens vs 128. At 128 every letterheaded PDF (university header, CNPJ,
+# address) embedded to the same boilerplate and collapsed into one cluster.
+EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
+# e5 wants a task prefix; its model card specifies "query: " for symmetric
+# tasks like clustering.
+EMBEDDING_PREFIX = "query: "
 
 readable_files = [".pdf", ".txt", ".docx", ".xml"]
 audio_files = [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a", ".aiff", ".opus"]
@@ -29,6 +38,42 @@ MANIFEST_PREFIX = ".file_organizer_manifest_"
 DEFAULT_SKIP_NAMES = {"__pycache__", "node_modules"}
 
 
+def _stopwords(langs):
+    """Union of YAKE's bundled stopword lists, for mixed-language directories.
+
+    YAKE only takes one `lan`, so a pt+en directory always had the wrong
+    stopwords for half its files. Returns None (= let YAKE load its own) for
+    a single language.
+
+    Reads the lists back off throwaway extractors rather than opening the
+    bundled .txt files directly - their location moves between YAKE versions.
+    An unknown language code falls back to YAKE's language-agnostic list.
+    """
+    if len(langs) < 2:
+        return None
+
+    words = set()
+    for lang in langs:
+        words.update(yake.KeywordExtractor(lan=lang).stopword_set)
+    return words
+
+
+def _folder_name(keywords):
+    """Folder name from the top-2 keywords, minus words they share.
+
+    YAKE's top keywords overlap constantly ("engenharia eletrica" +
+    "energia eletrica"), which used to produce names like
+    "Engenharia_eletrica_energia_eletrica".
+    """
+    seen, words = set(), []
+    for keyword in keywords[:2]:
+        for word in keyword.split():
+            if word.lower() not in seen:
+                seen.add(word.lower())
+                words.append(word)
+    return "_".join(words).capitalize()
+
+
 def _is_noise_entry(name, skip_noise, exclude_patterns):
     if skip_noise and (name.startswith(".") or name in DEFAULT_SKIP_NAMES):
         return True
@@ -40,11 +85,17 @@ class DocumentAnalyzer:
     #Main class for analyzing and organizing documents using AI-powered clustering.
     #Uses sentence embeddings for content similarity analysis and YAKE for keyword extraction.
 
-    def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, skip_noise=True, exclude_patterns=None):
+    def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, skip_noise=True, exclude_patterns=None, lang="en"):
         if max_clusters < 3:
             raise ValueError("max_clusters must be at least 3 (k=2 needs to be a testable candidate)")
-        self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-        self.kw_extractor = yake.KeywordExtractor(lan="en", n=yake_ngram, top=yake_top)
+        self.model = SentenceTransformer(EMBEDDING_MODEL)
+        # lang picks YAKE's stopword list - with the wrong one, the target
+        # language's stopwords ("de", "do", "para", ...) become folder names.
+        # Comma-separated ("pt,en") unions the lists for mixed directories.
+        langs = [part.strip() for part in lang.split(",") if part.strip()] or ["en"]
+        self.kw_extractor = yake.KeywordExtractor(
+            lan=langs[0], n=yake_ngram, top=yake_top, stopwords=_stopwords(langs)
+        )
         self.path_weight = path_weight
         self.max_clusters = max_clusters
         self.skip_noise = skip_noise
@@ -153,7 +204,13 @@ class DocumentAnalyzer:
             # Generate embeddings for clustering
             logger.info(f"Read {len(files_data)} entries from {path}; generating embeddings...")
             try:
-                embeddings = self.model.encode(df["Text"].tolist())
+                # normalize_embeddings makes KMeans' Euclidean distance
+                # monotonic in cosine distance, which is the metric these
+                # embeddings are actually trained for.
+                embeddings = self.model.encode(
+                    [EMBEDDING_PREFIX + text for text in df["Text"]],
+                    normalize_embeddings=True,
+                )
             except Exception as e:
                 raise RuntimeError(f"Failed to generate embeddings: {str(e)}")
 
@@ -264,9 +321,11 @@ class DocumentAnalyzer:
         if len(second_derivative) > 0:
             k_candidates.append(K[np.argmin(second_derivative)])
 
-        # Select most frequent k or use silhouette if tie
-        k_counts = Counter(k_candidates)
-        k_optimal = k_counts.most_common(1)[0][0]
+        # Median, not most-common: when all three metrics disagree, Counter
+        # just returned the first-inserted candidate (silhouette), which on a
+        # dense blob plus a few outliers always votes for a tiny k. The median
+        # still returns the majority value whenever two metrics agree.
+        k_optimal = int(np.median(k_candidates))
 
         # Validate result
         if k_optimal < 2:
@@ -287,7 +346,7 @@ class DocumentAnalyzer:
             # Extract keywords for this cluster
             keywords = self._extract_keywords(cluster_files["Text"].tolist())
             # Create folder name from top keywords
-            folder_name = "_".join(keywords[:2]).replace(" ", "_").capitalize()
+            folder_name = _folder_name(keywords)
             cluster_keywords[cluster] = folder_name if folder_name else f"Cluster_{cluster}"
             # Different clusters can extract the same top keywords; merge into
             # the existing folder instead of overwriting it and losing files.

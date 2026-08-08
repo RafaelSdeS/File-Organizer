@@ -1,4 +1,5 @@
 import PyPDF2
+from PyPDF2.errors import PdfReadError
 import pandas as pd
 import logging
 import os
@@ -68,7 +69,7 @@ def read_file(file_path):
                         logger.info(f"No text found in PDF file: {file_path}")
                         return ""
                     return text
-            except PyPDF2.PdfReadError as e:
+            except PdfReadError as e:
                 logger.error(f"Invalid PDF format: {file_path} - {str(e)}")
                 raise ValueError(f"Invalid PDF format: {file_path}")
         
@@ -114,9 +115,12 @@ def read_file(file_path):
         raise
 
 def create_weighted_text(path, content, path_weight=2):
+        # Space-separated: "a.pdfa.pdf" tokenizes as one unknown blob, so the
+        # repetition added noise instead of weight.
+        weighted_path = " ".join([str(path)] * path_weight)
         if pd.isna(content):
-            return str(path) * path_weight
-        return (str(path) * path_weight) + " " + content
+            return weighted_path
+        return weighted_path + " " + content
 
 # Supported language models (small/lightweight versions for efficiency)
 VOSK_LANGUAGE_MODELS = {

@@ -70,6 +70,18 @@ class TestReadFile(unittest.TestCase):
                 f.write(b"%PDF-1.4 fake content")
             self.assertEqual(read_file(path), "Page text")
 
+    @patch('src.document_analyzer.utils.PyPDF2.PdfReader')
+    def test_malformed_pdf_raises_value_error(self, mock_reader_cls):
+        from PyPDF2.errors import PdfReadError
+        mock_reader_cls.side_effect = PdfReadError("EOF marker not found")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "doc.pdf")
+            with open(path, "wb") as f:
+                f.write(b"not a real pdf")
+            with self.assertRaises(ValueError):
+                read_file(path)
+
 
 class TestAudioMetadata(unittest.TestCase):
     def test_unsupported_extension_returns_none(self):

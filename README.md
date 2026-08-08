@@ -26,7 +26,7 @@ Audio transcription also needs `ffmpeg` on `PATH`. Without it (or without `tinyt
 ### CLI
 ```bash
 python -m src.document_analyzer.main [path] [--target-dir DIR] [--dry-run] [-y]
-    [--path-weight N] [--max-clusters N] [--keyword-ngram N] [--keyword-count N]
+    [--path-weight N] [--max-clusters N] [--keyword-ngram N] [--keyword-count N] [--lang CODE]
 ```
 - `path` — directory to organize (prompted interactively if omitted)
 - `--target-dir` — move organized files here instead of in place
@@ -36,13 +36,14 @@ python -m src.document_analyzer.main [path] [--target-dir DIR] [--dry-run] [-y]
 - `--max-clusters` — upper bound on the number of clusters to consider (default: 10)
 - `--keyword-ngram` — max n-gram size for YAKE keyword extraction (default: 2)
 - `--keyword-count` — number of keywords YAKE extracts per cluster; the top 2 become the folder name (default: 5)
+- `--lang` — language of your documents, used to pick the keyword stopword list (default: `en`; e.g. `pt`, `es`). Comma-separate for mixed directories: `--lang pt,en`
 
 ### Python API
 ```python
 from document_analyzer import DocumentAnalyzer
 
 # All constructor args are optional; shown here at their defaults.
-analyzer = DocumentAnalyzer(path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5)
+analyzer = DocumentAnalyzer(path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, lang="en")
 
 try:
     folder_structure = analyzer.analyze_directory("/path/to/documents")

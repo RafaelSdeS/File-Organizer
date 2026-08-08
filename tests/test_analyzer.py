@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
-from src.document_analyzer.analyzer import DocumentAnalyzer, undo_organize, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES
+from src.document_analyzer.analyzer import DocumentAnalyzer, undo_organize, _folder_name, _stopwords, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES
 from src.document_analyzer.utils import read_file, create_weighted_text
 
 class TestDocumentAnalyzer(unittest.TestCase):
@@ -287,6 +287,22 @@ class TestDocumentAnalyzer(unittest.TestCase):
         self.assertIn(path, weighted_text)
         self.assertIn(content, weighted_text)
 
+    def test_create_weighted_text_separates_repetitions(self):
+        """Repeated filenames must be space-separated, not glued together."""
+        self.assertEqual(
+            create_weighted_text("a.pdf", None, path_weight=3),
+            "a.pdf a.pdf a.pdf",
+        )
+
+    def test_folder_name_drops_words_shared_between_keywords(self):
+        """Overlapping YAKE keywords shouldn't repeat words in the folder name."""
+        self.assertEqual(
+            _folder_name(["engenharia eletrica", "energia eletrica", "ignored"]),
+            "Engenharia_eletrica_energia",
+        )
+        self.assertEqual(_folder_name(["contrato", "imobiliario"]), "Contrato_imobiliario")
+        self.assertEqual(_folder_name([]), "")
+
     def test_organize_files_moves_files_in_place(self):
         """organize_files should move each listed file into its cluster folder."""
         source_dir = Path("test_organize_source")
@@ -382,6 +398,22 @@ class TestDocumentAnalyzer(unittest.TestCase):
             self.assertFalse(dest_file.exists())
         finally:
             shutil.rmtree(source_dir, ignore_errors=True)
+
+class TestStopwords(unittest.TestCase):
+    """Uses the real yake.KeywordExtractor, unlike TestDocumentAnalyzer."""
+
+    def test_single_language_defers_to_yake(self):
+        self.assertIsNone(_stopwords(["pt"]))
+
+    def test_unions_both_languages(self):
+        merged = _stopwords(["pt", "en"])
+        self.assertIn("para", merged)   # Portuguese
+        self.assertIn("the", merged)    # English
+
+    def test_unknown_language_falls_back_instead_of_emptying(self):
+        merged = _stopwords(["en", "zzz"])
+        self.assertIn("the", merged)
+
 
 if __name__ == '__main__':
     unittest.main()
