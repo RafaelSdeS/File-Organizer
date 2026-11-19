@@ -124,6 +124,21 @@ class TestDocumentAnalyzer(unittest.TestCase):
         finally:
             shutil.rmtree(test_dir, ignore_errors=True)
 
+    def test_analyze_folder_stops_reading_once_it_has_enough_text(self):
+        root = Path("test_analyze_folder_read_cap")
+        try:
+            root.mkdir(exist_ok=True)
+            for marker in "ABC":
+                (root / f"{marker}.txt").write_text(marker * 50)
+            with patch('src.document_analyzer.analyzer.READ_CHARS', 60):
+                content = self.analyzer._analyze_folder(str(root))["Content"]
+            # Two files fill the budget; the third only adds its name.
+            self.assertEqual(sum(marker * 50 in content for marker in "ABC"), 2)
+            for marker in "ABC":
+                self.assertIn(f"{marker}.txt", content)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_analyze_folder_skips_symlinked_directory_cycle(self):
         """Regression: a symlinked directory pointing back at an ancestor used
         to recurse forever (entry.is_dir() follows symlinks by default)."""

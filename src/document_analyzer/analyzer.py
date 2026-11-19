@@ -8,6 +8,7 @@ import shutil
 import json
 import fnmatch
 import re
+import time
 from collections import Counter
 from datetime import datetime
 import numpy as np
@@ -42,6 +43,10 @@ HISTORY_PATH = os.path.join(
 )
 # Folder for documents too far from every cluster centroid to belong anywhere.
 MISC_FOLDER = "Misc"
+# How much of each document to read. The embedding model only sees ~512
+# tokens (roughly 2000-2500 characters), so the rest of a long PDF was pure
+# cost: on ~2000 files, reading everything took 181 s of a 411 s run.
+READ_CHARS = 5000
 
 
 def _elbow_k(K, distortions):
@@ -235,7 +240,10 @@ class DocumentAnalyzer:
                 raise PermissionError(f"Permission denied for directory: {path}")
             
             files_data = []
-            
+            # Per-stage timings go to the INFO log, to see where time goes on
+            # big folders.
+            started = time.perf_counter()
+
             with os.scandir(path) as dir_iter:
                 for entry in dir_iter:
                     if _is_noise_entry(entry.name, self.skip_noise, self.exclude_patterns):
@@ -246,7 +254,7 @@ class DocumentAnalyzer:
                             ext = ext.lower()
                             if ext in readable_files:
                                 try:
-                                    content = read_file(os.path.join(path, entry.name))
+                                    content = read_file(os.path.join(path, entry.name), max_chars=READ_CHARS)
                                     file_data = {
                                         "Path": entry.name,
                                         "Content": content
@@ -307,7 +315,8 @@ class DocumentAnalyzer:
             )
 
             # Generate embeddings for clustering
-            logger.info(f"Read {len(files_data)} entries from {path}; generating embeddings...")
+            logger.info(f"Read {len(files_data)} entries from {path} in {time.perf_counter() - started:.1f}s; generating embeddings...")
+            started = time.perf_counter()
             try:
                 # normalize_embeddings makes KMeans' Euclidean distance
                 # monotonic in cosine distance, which is the metric these
@@ -328,12 +337,14 @@ class DocumentAnalyzer:
                 found = [lang for lang in self.stopword_sets if lang in set(languages)]
                 self.kw_extractor = self._keyword_extractor(found or ["en"])
 
-            # Find optimal number of clusters using the Elbow method
-            logger.info("Determining optimal number of clusters...")
+            logger.info(f"Embedded in {time.perf_counter() - started:.1f}s; determining the number of clusters...")
+            started = time.perf_counter()
             try:
                 optimal_clusters = self._find_optimal_clusters(embeddings, max_k=self.max_clusters)
             except Exception as e:
                 raise RuntimeError(f"Failed to find optimal clusters: {str(e)}")
+            logger.info(f"Picked k={optimal_clusters} in {time.perf_counter() - started:.1f}s")
+            started = time.perf_counter()
             
             # Perform K-means clustering
             try:
@@ -356,8 +367,9 @@ class DocumentAnalyzer:
                 "k_scores": self.k_scores,
             }
 
-            # Organize files into clusters
-            return self._organize_clusters(df)
+            folders = self._organize_clusters(df)
+            logger.info(f"Clustered and named folders in {time.perf_counter() - started:.1f}s")
+            return folders
             
         except Exception as e:
             logger.error(f"Analysis failed: {str(e)}")
@@ -382,9 +394,14 @@ class DocumentAnalyzer:
                 _, ext = os.path.splitext(entry.name)
                 ext = ext.lower()
 
-                if ext in readable_files:
+                # Once the folder has enough text for the embedding, the rest
+                # of its files only contribute their names.
+                if len(file_data["Content"]) >= READ_CHARS:
+                    file_data["Content"] += entry.name
+
+                elif ext in readable_files:
                     try:
-                        content = read_file(full_path)
+                        content = read_file(full_path, max_chars=READ_CHARS)
                         file_data["Content"] += (entry.name + content)
                     except Exception as e:
                         logger.warning(f"Failed to read file {full_path}: {str(e)}")
@@ -432,7 +449,11 @@ class DocumentAnalyzer:
             kmeans.fit(embeddings)
 
             distortions.append(kmeans.inertia_)
-            silhouette_scores.append(silhouette_score(embeddings, kmeans.labels_))
+            # silhouette is O(n^2): estimate it from a sample on big folders.
+            silhouette_scores.append(silhouette_score(
+                embeddings, kmeans.labels_, random_state=0,
+                sample_size=2000 if len(embeddings) > 2000 else None,
+            ))
             davies_bouldin_scores.append(davies_bouldin_score(embeddings, kmeans.labels_))
 
         # Each metric votes for a k. The elbow vote is None below 5 documents

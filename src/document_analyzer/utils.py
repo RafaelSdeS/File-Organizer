@@ -107,7 +107,10 @@ def _read_zipped_xml(file_path, pattern, tags):
             texts.extend("".join(node.itertext()) for node in root.iter() if node.tag in tags)
     return "\n".join(text for text in texts if text)
 
-def read_file(file_path):
+def read_file(file_path, max_chars=None):
+    """Text content of a document; with max_chars, only (about) that much
+    of its start - PDFs stop extracting pages and text files stop reading
+    once they have it, which is most of the cost on large files."""
     try:
         # Check if file exists and is accessible
         if not os.path.exists(file_path):
@@ -135,10 +138,12 @@ def read_file(file_path):
                         page_text = page.extract_text()
                         if page_text:
                             text += page_text
+                        if max_chars and len(text) >= max_chars:
+                            break
                     if not text:
                         logger.info(f"No text found in PDF file: {file_path}")
                         return ""
-                    return text
+                    return text[:max_chars]
             except PdfReadError as e:
                 logger.error(f"Invalid PDF format: {file_path} - {str(e)}")
                 raise ValueError(f"Invalid PDF format: {file_path}")
@@ -149,7 +154,7 @@ def read_file(file_path):
                 text = _read_zipped_xml(file_path, *ZIPPED_XML_FORMATS[ext])
                 if not text:
                     logger.info(f"No text found in {ext} file: {file_path}")
-                return text
+                return text[:max_chars]
             except (zipfile.BadZipFile, KeyError, ET.ParseError) as e:
                 logger.error(f"Invalid {ext} format: {file_path} - {str(e)}")
                 raise ValueError(f"Invalid {ext} format: {file_path}")
@@ -160,25 +165,22 @@ def read_file(file_path):
                 text = _rtf_to_text(file.read().decode('latin-1'))
             if not text:
                 logger.info(f"No text found in RTF file: {file_path}")
-            return text
+            return text[:max_chars]
 
         # Handle text files
         elif ext in ['.txt', '.md', '.csv', '.xml']:
             try:
-                # Detect encoding automatically
                 with open(file_path, 'rb') as file:
-                    raw_content = file.read()
-                    encoding = chardet.detect(raw_content)['encoding']
-                    if not encoding:
-                        encoding = 'utf-8'  # Fallback to utf-8
-                
-                # Read with detected encoding
-                with open(file_path, 'r', encoding=encoding) as file:
-                    text = file.read().strip()
-                    if not text:
-                        logger.info(f"No text found in file: {file_path}")
-                        return ""
-                    return text
+                    # Up to 4 bytes per character in UTF-8.
+                    raw_content = file.read(max_chars * 4 if max_chars else -1)
+                # chardet is slow on big inputs; the first 64 KB are plenty.
+                encoding = chardet.detect(raw_content[:65536])['encoding'] or 'utf-8'
+                # "ignore": a capped read can end mid-character.
+                text = raw_content.decode(encoding, errors='ignore' if max_chars else 'strict').strip()
+                if not text:
+                    logger.info(f"No text found in file: {file_path}")
+                    return ""
+                return text[:max_chars]
             except Exception as e:
                 logger.error(f"Error reading text file: {file_path} - {str(e)}")
                 raise ValueError(f"Error reading text file: {file_path}")

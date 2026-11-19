@@ -85,6 +85,27 @@ class TestReadFile(unittest.TestCase):
                 zf.writestr("content.xml", content_xml)
             self.assertEqual(read_file(path), "Heading\nHello world")
 
+    def test_max_chars_caps_text_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "long.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("é" * 10000)  # 2 bytes each: the capped read can split one
+            self.assertEqual(read_file(path, max_chars=100), "é" * 100)
+
+    @patch('src.document_analyzer.utils.PdfReader')
+    def test_max_chars_stops_extracting_pdf_pages(self, mock_reader_cls):
+        pages = [MagicMock() for _ in range(5)]
+        for page in pages:
+            page.extract_text.return_value = "x" * 60
+        mock_reader_cls.return_value.pages = pages
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "big.pdf")
+            with open(path, "wb") as f:
+                f.write(b"%PDF-1.4 fake")
+            self.assertEqual(read_file(path, max_chars=100), "x" * 100)
+        # Two pages already give 120 characters: the rest are never parsed.
+        self.assertEqual([p.extract_text.called for p in pages], [True, True, False, False, False])
+
     def test_xlsx_file_reads_shared_and_inline_strings(self):
         ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
         with tempfile.TemporaryDirectory() as tmp:
