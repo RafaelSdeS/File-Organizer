@@ -1,0 +1,17 @@
+In macroeconomics, inflation targeting is a monetary policy where a central bank follows an explicit target for the inflation rate for the medium-term and announces this inflation target to the public. The assumption is that the best that monetary policy can do to support long-term growth of the economy is to maintain price stability, and price stability is achieved by controlling inflation. The central bank uses short-term interest rates as its main monetary instrument.
+An inflation-targeting central bank will raise or lower interest rates based on above-target or below-target inflation, respectively. The conventional wisdom is that raising interest rates usually cools the economy to rein in inflation; lowering interest rates usually accelerates the economy, thereby boosting inflation. The first three countries to implement fully-fledged inflation targeting were New Zealand, Canada and the United Kingdom in the early 1990s, although Germany had adopted many elements of inflation targeting earlier. As of 2024, inflation targeting has been adopted by 45 individual countries and the Euro Area as their monetary policy framework.
+
+
+== History ==
+Early proposals of monetary systems targeting the price level or the inflation rate, rather than the exchange rate, followed the general crisis of the gold standard after World War I. Irving Fisher proposed a "compensated dollar" system in which the gold content in paper money would vary with the price of goods in terms of gold, so that the price level in terms of paper money would stay fixed. Fisher's proposal was a first attempt to target prices while retaining the automatic functioning of the gold standard. In his Tract on Monetary Reform (1923), John Maynard Keynes advocated what we would now call an inflation targeting scheme. In the context of sudden inflations and deflations in the international economy right after World War I, Keynes recommended a policy of exchange-rate flexibility, appreciating the currency as a response to international inflation and depreciating it when there are international deflationary forces, so that internal prices remained more or less stable. Interest in inflation targeting waned during the Bretton Woods era (1944–1971), as they were inconsistent with the exchange rate pegs that prevailed during three decades after World War II.
+
+
+=== New Zealand ===
+Inflation targeting was pioneered in New Zealand in 1990. The government and the Reserve Bank of New Zealand adopted a Policy Target Agreement (PTA) in March 1990 in which the Reserve Bank of New Zealand would pursue an inflation target range of 0 to 2 percent. 
+
+
+=== Canada ===
+Canada was the second country to formally adopt inflation targeting in February 1991.
+
+
+=== United Kingdom ===

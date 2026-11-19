@@ -1,0 +1,14 @@
+Em ciência da computação e campos relacionados, redes neurais artificiais (português brasileiro) ou redes neuronais artificiais (português europeu) (RNAs) são modelos computacionais inspirados pelo sistema nervoso central de um animal (em particular o cérebro) que são capazes de realizar o aprendizado de máquina bem como o reconhecimento de padrões. Redes neurais artificiais geralmente são apresentadas como sistemas de "neurônios interconectados, que podem computar valores de entradas", simulando o comportamento de redes neurais biológicas.
+Por exemplo, uma rede neural para o reconhecimento de escrita manual é definida por um conjunto de neurônios de entrada que podem ser ativados pelos pixels de uma imagem de entrada. Os dados adquiridos por essa ativação dos neurônios são então repassados​​, ponderados e transformados por uma função determinada pelo designer da rede, a outros neurônios. Este processo é repetido até que, finalmente, um neurônio de saída é ativado. Isso determina que caractere foi lido.
+Assim como outros métodos de aprendizado de máquina, sistemas que aprendem a partir dos dados, redes neurais têm sido usadas para resolver uma grande variedade de tarefas que são difíceis de resolver utilizando programação baseada em regras comuns, incluindo visão computacional e reconhecimento de voz.
+
+
+== Exemplos ==
+A inspiração original para essa técnica advém do exame das estruturas do cérebro, em particular do exame de neurônios. A propriedade mais importante das redes neurais é a habilidade de interagir com seu ambiente em busca de reconhecer padrões que podem solucionar problemas dos mais fáceis aos mais complexos consequentemente melhorando seu desempenho. Isso é feito através de um processo iterativo de ajustes aplicado aos seus pesos, o treino.
+A aprendizagem ocorre quando a rede neural atinge uma solução generalizada para uma classe de problemas.
+Denomina-se algoritmo de aprendizagem a um conjunto de regras bem definidas para a solução de um problema de aprendizagem. Outro fator importante é a maneira pela qual uma rede neural se relaciona com o ambiente. Nesse contexto existem os seguintes
+paradigmas de aprendizagem:
+Aprendizagem Supervisionada, quando é utilizado um agente externo que indica à rede a resposta desejada para o padrão de entrada, Aprendizagem Não Supervisionada (auto-organização), quando não existe uma agente externo indicando a resposta desejada para os padrões de entrada, e Aprendizagem por Reforço, quando um crítico externo avalia a resposta fornecida pela rede.
+
+
+== Aplicações ==

@@ -1,0 +1,19 @@
+Compound interest or anatocism is interest accumulated from a principal sum and previously accumulated interest. It is the result of reinvesting or retaining interest that would otherwise be paid out, or of the accumulation of debts from a borrower.
+Compound interest is contrasted with simple interest, where previously accumulated interest is not added to the principal amount of the current period. Compounded interest depends on the simple interest rate applied and the frequency at which the interest is compounded.
+
+
+== Compounding frequency ==
+The compounding frequency is the number of times per given unit of time the accumulated interest is capitalized, on a regular basis. The frequency could be yearly, half-yearly, quarterly, monthly, weekly, daily, continuously, or not at all until maturity.
+For example, monthly capitalization with interest expressed as an annual rate means that the compounding frequency is 12, with time periods measured in months.
+
+
+== Annual equivalent rate ==
+To help consumers compare retail financial products more fairly and easily, many countries require financial institutions to disclose the annual compound interest rate on deposits or advances on a comparable basis. The interest rate on an annual equivalent basis may be referred to variously in different markets as effective annual percentage rate (EAPR), annual equivalent rate (AER), effective interest rate, effective annual rate, annual percentage yield  and other terms. The effective annual rate is the total accumulated interest that would be payable up to the end of one year, divided by the principal sum. These rates are usually the annualised compound interest rate alongside charges other than interest, such as taxes and other fees.
+
+
+== Examples ==
+
+The interest on corporate bonds and government bonds is usually payable twice yearly. The amount of interest paid every six months is the disclosed interest rate divided by two and multiplied by the principal. The yearly compounded rate is higher than the disclosed rate.
+Canadian mortgage loans are generally compounded semi-annually with monthly or more frequent payments.
+U.S. mortgages use an amortizing loan, not compound interest. With these loans, an amortization schedule is used to determine how to apply payments toward principal and interest.  Interest generated on these loans is not added to the principal, but rather is paid off monthly as the payments are applied.
+It is sometimes mathematically simpler, for example, in the valuation of derivatives, to use continuous compounding. Continuous compounding in pricing these instruments is a natural consequence of Itô calculus, where financial derivatives are valued at ever-increasing frequency, until the limit is approached and the derivative is valued in continuous time.

@@ -1,0 +1,16 @@
+k-means clustering is a method of vector quantization, originally from signal processing, that aims to partition n observations into k clusters in which each observation belongs to the cluster with the nearest mean (cluster centers or cluster centroid). This results in a partitioning of the data space into Voronoi cells. k-means clustering minimizes within-cluster variances (squared Euclidean distances), but not regular Euclidean distances, which would be the more difficult Weber problem: the mean optimizes squared errors, whereas only the geometric median minimizes Euclidean distances. For instance, better Euclidean solutions can be found using k-medians and k-medoids.
+The problem is computationally difficult (NP-hard); however, efficient heuristic algorithms converge quickly to a local optimum. These are usually similar to the expectation–maximization algorithm for mixtures of Gaussian distributions via an iterative refinement approach employed by both k-means and Gaussian mixture modeling. They both use cluster centers to model the data; however, k-means clustering tends to find clusters of comparable spatial extent, while the Gaussian mixture model allows clusters to have different shapes.
+The unsupervised k-means algorithm has a loose relationship to the k-nearest neighbor classifier, a popular supervised machine learning technique for classification that is often confused with k-means due to the name. Applying the 1-nearest neighbor classifier to the cluster centers obtained by k-means classifies new data into the existing clusters. This is known as nearest centroid classifier or Rocchio algorithm.
+
+
+== Description ==
+Given a set of observations (x1, x2, ..., xn), where each observation is a d-dimensional real vector, k-means clustering aims to partition the n observations into k (≤ n) sets S = {S1, S2, ..., Sk} so as to minimize the within-cluster sum of squares (WCSS) (i.e. variance). Formally, the objective is to find:
+argmin𝐒∑i=1k∑𝐱∈Si‖𝐱−𝝁i‖2=argmin𝐒∑i=1k|Si|Var⁡Si
+where μi is the mean (also called centroid) of points in Si, i.e.
+𝝁𝒊=1|Si|∑𝐱∈Si𝐱,
+|Si| is the size of Si, and ‖⋅‖ is the usual L2 norm . This is equivalent to minimizing the pairwise squared deviations of points in the same cluster:
+argmin𝐒∑i=1k1|Si|∑𝐱,𝐲∈Si‖𝐱−𝐲‖2
+The equivalence can be deduced from the identity |Si|∑𝐱∈Si‖𝐱−𝝁i‖2=12∑𝐱,𝐲∈Si‖𝐱−𝐲‖2. Since the total variance is constant, this is equivalent to maximizing the sum of squared deviations between points in different clusters (between-cluster sum of squares, BCSS). This deterministic relationship is also related to the law of total variance in probability theory.
+
+
+== History ==
