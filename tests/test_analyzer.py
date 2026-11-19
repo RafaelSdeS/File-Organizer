@@ -132,7 +132,13 @@ class TestDocumentAnalyzer(unittest.TestCase):
             root.mkdir(exist_ok=True)
             (root / "note.txt").write_text("hello")
             loop = root / "loop"
-            loop.symlink_to(root, target_is_directory=True)
+            # Absolute target: a relative one resolves from inside root and
+            # dangles, which never formed a cycle at all.
+            try:
+                loop.symlink_to(root.resolve(), target_is_directory=True)
+            except OSError:  # Windows without symlink privileges
+                self.skipTest("creating symlinks isn't permitted here")
+            self.assertTrue(loop.resolve() == root.resolve())
 
             result = self.analyzer._analyze_folder(str(root))
             self.assertIn("note.txt", result["Content"])
