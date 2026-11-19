@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
-from src.document_analyzer.analyzer import DocumentAnalyzer, undo_organize, _center_by_language, _detect_languages, _elbow_k, _folder_name, _stopwords, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES, MISC_FOLDER, AUTO_LANGS
+from src.document_analyzer.analyzer import DocumentAnalyzer, undo_organize, _center_by_language, _detect_languages, _elbow_k, _folder_name, _misc_labels, _stopwords, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES, MISC_FOLDER, AUTO_LANGS
 from src.document_analyzer.utils import read_file, create_weighted_text
 
 class TestDocumentAnalyzer(unittest.TestCase):
@@ -88,8 +88,9 @@ class TestDocumentAnalyzer(unittest.TestCase):
 
     def test_analyze_directory(self):
         """Test directory analysis with mocked components"""
+        # Two clusters of two: a one-file cluster would now go to Misc.
         self.mock_model.encode.return_value = np.array(
-            [[0, 0], [0, 1], [10, 10]]
+            [[0, 0], [0, 1], [10, 10], [10, 11]]
         )
         self.mock_kw_extractor.extract_keywords.return_value = [
             ('mock_keyword', 0.5)
@@ -99,7 +100,7 @@ class TestDocumentAnalyzer(unittest.TestCase):
 
         try:
             test_dir.mkdir(exist_ok=True)
-            for name in ("test1.pdf", "test2.pdf", "test3.pdf"):
+            for name in ("test1.pdf", "test2.pdf", "test3.pdf", "test4.pdf"):
                 (test_dir / name).touch(exist_ok=True)
 
             result = self.analyzer.analyze_directory(str(test_dir))
@@ -107,7 +108,7 @@ class TestDocumentAnalyzer(unittest.TestCase):
             # Both clusters extract the same mocked keyword, so they should
             # merge into one folder rather than one overwriting the other.
             self.assertEqual(len(result), 1)
-            self.assertEqual(sum(len(files) for files in result.values()), 3)
+            self.assertEqual(sum(len(files) for files in result.values()), 4)
 
             self.mock_model.encode.assert_called_once()
             self.assertEqual(self.mock_kw_extractor.extract_keywords.call_count, 2)
@@ -307,6 +308,21 @@ class TestDocumentAnalyzer(unittest.TestCase):
             self.assertEqual(self.mock_kw_extractor.extract_keywords.call_count, 3)
         finally:
             shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_misc_takes_documents_closer_to_another_cluster(self):
+        """Negative silhouette: on average nearer the other cluster's
+        members than its own, so it belongs to neither."""
+        emb = np.array([[0, 0], [0, 1], [1, 0], [10, 10], [10, 11], [11, 10], [6, 6]], dtype=float)
+        labels = np.array([0, 0, 0, 1, 1, 1, 0])  # [6, 6] glued to cluster 0
+        centers = np.array([emb[labels == c].mean(axis=0) for c in (0, 1)])
+        result = _misc_labels(emb, labels, centers, z=100)  # distance rule out of play
+        self.assertEqual(result.tolist(), [0, 0, 0, 1, 1, 1, -1])
+
+    def test_misc_takes_a_document_left_alone_in_its_cluster(self):
+        emb = np.array([[0, 0], [0, 1], [10, 10]], dtype=float)
+        labels = np.array([0, 0, 1])
+        centers = np.array([[0, 0.5], [10, 10]])
+        self.assertEqual(_misc_labels(emb, labels, centers, z=100).tolist(), [0, 0, -1])
 
     def test_misc_threshold_zero_disables_misc(self):
         self.analyzer.misc_threshold = 0

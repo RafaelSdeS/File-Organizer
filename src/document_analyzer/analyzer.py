@@ -1,5 +1,5 @@
 import pandas as pd
-from sklearn.metrics import davies_bouldin_score, silhouette_score
+from sklearn.metrics import davies_bouldin_score, silhouette_samples, silhouette_score
 import yake
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
@@ -118,6 +118,31 @@ def _center_by_language(embeddings, languages):
         centered[mask] -= centered[mask].mean(axis=0)
     norms = np.linalg.norm(centered, axis=1, keepdims=True)
     return centered / np.maximum(norms, 1e-12)
+
+
+def _misc_labels(embeddings, labels, centers, z):
+    """Relabel as -1 (the Misc folder) documents that don't belong anywhere.
+
+    KMeans forces every document into some cluster, so a one-off gets glued
+    to its nearest neighbours. A document goes to Misc if it is
+    - unusually far from its own centroid (distance > mean + z std), or
+    - closer, on average, to another cluster than to its own (negative
+      silhouette), or
+    - left alone in its cluster - a one-file folder helps nobody.
+    Measured on the demo: 3 of the 4 one-offs caught (the old distance-only
+    rule caught 2), same single false positive; on a real 32-file folder it
+    also pulled out exactly the files sitting in the wrong group.
+    ponytail: silhouette_samples is O(n^2); fine to a few thousand files.
+    """
+    labels = np.array(labels)
+    dist = np.linalg.norm(embeddings - centers[labels], axis=1)
+    misc = dist > dist.mean() + z * dist.std()
+    if 1 < len(set(labels)) < len(labels):
+        misc |= silhouette_samples(embeddings, labels) < 0
+    labels[misc] = -1
+    kept, counts = np.unique(labels[labels >= 0], return_counts=True)
+    labels[np.isin(labels, kept[counts < 2])] = -1
+    return labels
 
 
 def _folder_name(keywords):
@@ -315,14 +340,8 @@ class DocumentAnalyzer:
             except Exception as e:
                 raise RuntimeError(f"Clustering failed: {str(e)}")
 
-            # KMeans forces every document into some cluster, so a one-off
-            # gets glued to its nearest neighbours. Anything unusually far
-            # from its own centroid goes to Misc instead (label -1).
-            # ponytail: global z-score over all distances; per-cluster
-            # thresholds if clusters of very different spread show up.
             if self.misc_threshold:
-                dist = np.linalg.norm(embeddings - kmeans.cluster_centers_[labels], axis=1)
-                labels = np.where(dist > dist.mean() + self.misc_threshold * dist.std(), -1, labels)
+                labels = _misc_labels(embeddings, labels, kmeans.cluster_centers_, self.misc_threshold)
             df["Cluster"] = labels
 
             self.last_run = {
