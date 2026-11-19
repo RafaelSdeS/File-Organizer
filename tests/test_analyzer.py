@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
-from src.document_analyzer.analyzer import DocumentAnalyzer, undo_organize, _folder_name, _stopwords, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES
+from src.document_analyzer.analyzer import DocumentAnalyzer, undo_organize, _center_by_language, _detect_languages, _elbow_k, _folder_name, _stopwords, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES, MISC_FOLDER
 from src.document_analyzer.utils import read_file, create_weighted_text
 
 class TestDocumentAnalyzer(unittest.TestCase):
@@ -252,6 +252,71 @@ class TestDocumentAnalyzer(unittest.TestCase):
         optimal_k = self.analyzer._find_optimal_clusters(embeddings, max_k=4)
         self.assertEqual(optimal_k, 4)
 
+    def test_elbow_votes_for_sharpest_bend(self):
+        """Regression: K[argmin(2nd diff)] picked the flattest stretch and was
+        off by one; the elbow is the max 2nd difference, centred on K[i+1].
+        Here inertia barely drops 2->3, collapses 3->4, then flattens: k=4.
+        The old formula returned 2 for this curve."""
+        self.assertEqual(_elbow_k(range(2, 7), [100, 90, 20, 18, 17]), 4)
+
+    def test_elbow_needs_three_points(self):
+        self.assertIsNone(_elbow_k(range(2, 4), [100, 50]))
+
+    def test_find_optimal_clusters_records_scores_for_report(self):
+        rng = np.random.default_rng(0)
+        embeddings = rng.random((12, 3))
+        k = self.analyzer._find_optimal_clusters(embeddings, max_k=5)
+
+        scores = self.analyzer.k_scores
+        self.assertEqual(scores["k"], [2, 3, 4, 5])
+        self.assertEqual(scores["chosen"], k)
+        for metric in ("inertia", "silhouette", "davies_bouldin"):
+            self.assertEqual(len(scores[metric]), 4)
+        self.assertEqual(set(scores["votes"]), {"silhouette", "davies_bouldin", "elbow"})
+
+    def test_far_document_goes_to_misc(self):
+        """KMeans glues a one-off to its nearest cluster; one far from its
+        centroid (> mean + 2 std) should land in Misc instead."""
+        rng = np.random.default_rng(0)
+        groups = [rng.normal(loc=c, scale=0.01, size=(5, 2)) for c in ((0, 0), (100, 0), (0, 100))]
+        outlier = np.array([[6.0, 0.0]])  # nearest to group (0, 0), but well outside it
+        self.mock_model.encode.return_value = np.vstack(groups + [outlier])
+        self.mock_kw_extractor.extract_keywords.return_value = [("topic", 0.5)]
+
+        test_dir = Path("test_misc_directory")
+        try:
+            test_dir.mkdir(exist_ok=True)
+            for i in range(16):
+                (test_dir / f"doc{i:02d}.txt").write_text("x")
+            with patch.object(self.analyzer, "_find_optimal_clusters", return_value=3):
+                result = self.analyzer.analyze_directory(str(test_dir))
+
+            # scandir order is arbitrary; last_run["paths"] says which file
+            # got the outlier's embedding (the 16th encode() row).
+            self.assertEqual(result[MISC_FOLDER], [self.analyzer.last_run["paths"][15]])
+            # Misc gets no keyword extraction: only the 3 real clusters do.
+            self.assertEqual(self.mock_kw_extractor.extract_keywords.call_count, 3)
+        finally:
+            shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_misc_threshold_zero_disables_misc(self):
+        self.analyzer.misc_threshold = 0
+        rng = np.random.default_rng(0)
+        groups = [rng.normal(loc=c, scale=0.01, size=(5, 2)) for c in ((0, 0), (100, 0), (0, 100))]
+        self.mock_model.encode.return_value = np.vstack(groups + [np.array([[6.0, 0.0]])])
+        self.mock_kw_extractor.extract_keywords.return_value = [("topic", 0.5)]
+
+        test_dir = Path("test_misc_disabled_directory")
+        try:
+            test_dir.mkdir(exist_ok=True)
+            for i in range(16):
+                (test_dir / f"doc{i:02d}.txt").write_text("x")
+            with patch.object(self.analyzer, "_find_optimal_clusters", return_value=3):
+                result = self.analyzer.analyze_directory(str(test_dir))
+            self.assertNotIn(MISC_FOLDER, result)
+        finally:
+            shutil.rmtree(test_dir, ignore_errors=True)
+
     def test_organize_clusters(self):
         """Test cluster organization"""
         # Create sample DataFrame
@@ -284,14 +349,22 @@ class TestDocumentAnalyzer(unittest.TestCase):
         content = "Test content"
 
         weighted_text = create_weighted_text(path, content)
-        self.assertIn(path, weighted_text)
+        self.assertIn("test", weighted_text)
         self.assertIn(content, weighted_text)
 
     def test_create_weighted_text_separates_repetitions(self):
         """Repeated filenames must be space-separated, not glued together."""
         self.assertEqual(
             create_weighted_text("a.pdf", None, path_weight=3),
-            "a.pdf a.pdf a.pdf",
+            "a a a",
+        )
+
+    def test_create_weighted_text_uses_name_words_without_extension(self):
+        """Separators become spaces and the extension is dropped, so YAKE
+        can't put 'feijoada.txt' into a folder name."""
+        self.assertEqual(
+            create_weighted_text("receita_pão-de.queijo.txt", None, path_weight=1),
+            "receita pão de queijo",
         )
 
     def test_folder_name_drops_words_shared_between_keywords(self):
@@ -396,8 +469,111 @@ class TestDocumentAnalyzer(unittest.TestCase):
 
             self.assertTrue((source_dir / "a.txt").exists())
             self.assertFalse(dest_file.exists())
+            # Nothing left behind: the emptied cluster folder (marker and
+            # all) and the fully-replayed manifest are both removed.
+            self.assertFalse((source_dir / "Cluster_one").exists())
+            self.assertFalse(os.path.exists(manifest_path))
         finally:
             shutil.rmtree(source_dir, ignore_errors=True)
+
+    def test_undo_keeps_manifest_and_folder_when_an_entry_is_skipped(self):
+        source_dir = Path("test_undo_partial_source")
+        try:
+            source_dir.mkdir(exist_ok=True)
+            (source_dir / "a.txt").write_text("a")
+            (source_dir / "b.txt").write_text("b")
+            manifest_path = self.analyzer.organize_files(
+                {"Cluster_one": ["a.txt", "b.txt"]}, str(source_dir)
+            )
+            # Someone recreated a.txt at its original spot: that restore must
+            # be skipped, so the folder still holds a file and the manifest stays.
+            (source_dir / "a.txt").write_text("new a")
+
+            undo_organize(manifest_path)
+
+            self.assertEqual((source_dir / "a.txt").read_text(), "new a")
+            self.assertTrue((source_dir / "b.txt").exists())
+            self.assertTrue((source_dir / "Cluster_one" / "a.txt").exists())
+            self.assertTrue(os.path.exists(manifest_path))
+        finally:
+            shutil.rmtree(source_dir, ignore_errors=True)
+
+    def test_copy_keeps_originals_and_undo_removes_only_copies(self):
+        source_dir = Path("test_copy_source")
+        try:
+            source_dir.mkdir(exist_ok=True)
+            (source_dir / "a.txt").write_text("a")
+            (source_dir / "sub").mkdir()
+            (source_dir / "sub" / "inner.txt").write_text("inner")
+
+            manifest_path = self.analyzer.organize_files(
+                {"Cluster_one": ["a.txt", "sub"]}, str(source_dir), copy=True
+            )
+
+            # Originals untouched, copies (file and whole subfolder) in place.
+            self.assertTrue((source_dir / "a.txt").exists())
+            self.assertTrue((source_dir / "sub" / "inner.txt").exists())
+            self.assertEqual((source_dir / "Cluster_one" / "a.txt").read_text(), "a")
+            self.assertEqual((source_dir / "Cluster_one" / "sub" / "inner.txt").read_text(), "inner")
+
+            undo_organize(manifest_path)
+
+            self.assertTrue((source_dir / "a.txt").exists())
+            self.assertTrue((source_dir / "sub" / "inner.txt").exists())
+            self.assertFalse((source_dir / "Cluster_one").exists())
+        finally:
+            shutil.rmtree(source_dir, ignore_errors=True)
+
+    def test_undo_never_deletes_a_copy_whose_original_is_gone(self):
+        source_dir = Path("test_copy_orphan_source")
+        try:
+            source_dir.mkdir(exist_ok=True)
+            (source_dir / "a.txt").write_text("a")
+            manifest_path = self.analyzer.organize_files(
+                {"Cluster_one": ["a.txt"]}, str(source_dir), copy=True
+            )
+            (source_dir / "a.txt").unlink()  # the copy is now the only one
+
+            undo_organize(manifest_path)
+
+            self.assertTrue((source_dir / "Cluster_one" / "a.txt").exists())
+        finally:
+            shutil.rmtree(source_dir, ignore_errors=True)
+
+class TestLanguageCentering(unittest.TestCase):
+    STOPWORDS = {"pt": {"de", "o", "a", "que"}, "en": {"the", "of", "and", "is"}}
+
+    def test_detect_languages_by_stopword_count(self):
+        texts = ["o gato de que a casa", "the cat is out of the house", "receita.txt"]
+        detected = _detect_languages(texts, self.STOPWORDS)
+        # No stopwords at all ties, and ties go to the first listed language.
+        self.assertEqual(detected.tolist(), ["pt", "en", "pt"])
+
+    def test_centering_removes_language_offset(self):
+        """Two topics x two languages, with a language offset bigger than the
+        topic difference: raw, same-language pairs are closest; centred, the
+        same topic across languages is."""
+        topic = {"A": np.array([1.0, 0, 0]), "B": np.array([0, 1.0, 0])}
+        offset = {"pt": np.array([0, 0, 3.0]), "en": np.array([0, 0, -3.0])}
+        rows = [(t, l) for l in ("pt", "en") for t in ("A", "B")]
+        emb = np.array([topic[t] + offset[l] for t, l in rows])
+        emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+        languages = np.array([l for _, l in rows])
+
+        def cos(m, i, j):
+            return m[i] @ m[j]
+        a_pt, b_pt, a_en = 0, 1, 2
+        self.assertGreater(cos(emb, a_pt, b_pt), cos(emb, a_pt, a_en))
+
+        centred = _center_by_language(emb, languages)
+        self.assertGreater(cos(centred, a_pt, a_en), cos(centred, a_pt, b_pt))
+        np.testing.assert_allclose(np.linalg.norm(centred, axis=1), 1.0)
+
+    def test_single_language_left_unchanged(self):
+        emb = np.random.default_rng(0).random((4, 3))
+        same = _center_by_language(emb, np.array(["pt", "pt", "pt", "en"]))
+        self.assertIs(same, emb)
+
 
 class TestStopwords(unittest.TestCase):
     """Uses the real yake.KeywordExtractor, unlike TestDocumentAnalyzer."""

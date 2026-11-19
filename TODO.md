@@ -102,10 +102,41 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
 - [ ] **Strip shared boilerplate before embedding.** The letterheads are
       near-identical across editais; IDF would kill them, dense embeddings
       won't. Pairs with the item above; same "only if needed" caveat.
-- [ ] **An outlier/`Misc` bucket.** KMeans forces every file into a cluster, so
+- [x] **An outlier/`Misc` bucket.** KMeans forces every file into a cluster, so
       a one-off (a single `Currículo`) always gets glued to its nearest
-      neighbours. ~5 lines (distance to centroid over a threshold → `Misc`),
-      deferred until the fixes above have been measured.
+      neighbours. Distance to centroid > mean + `--misc-threshold` std → `Misc`
+      (global z-score; per-cluster thresholds if spreads differ a lot). On the
+      demo it catches both one-offs plus one false positive (`bolsa de valores`).
+- [x] **Elbow vote was wrong.** `K[np.argmin(second_derivative)]` picked the
+      *flattest* stretch of the inertia curve and was off by one; the elbow is
+      `K[argmax + 1]` (`_elbow_k`). One of the three k votes was near-random.
+- [x] **pt+en folders clustered by language, not topic.** Found with
+      `--report` on `examples/demo` (6 topics, mixed pt/en): k=2, one folder per
+      language. e5 still encodes which language a text is in more strongly
+      than its topic (same-language ~0.85 cosine vs ~0.78 across). Tested
+      (adjusted Rand vs true topics at k=6): e5 raw 0.31, **e5 + per-language
+      centering 0.91**, paraphrase-multilingual-MiniLM 1.00 (but 128 tokens, see
+      above), LaBSE 0.85 (1.8 GB). Kept e5; with several `--lang` codes each
+      document's language is detected from stopwords and its language mean
+      subtracted (`_center_by_language`). On a real 32-file pt/en folder this
+      went from 3 folders (one holding 21 unrelated files) to 9 coherent ones.
+- [x] **Filename extension and separators leaked into embeddings and folder
+      names** (`Eduardo_gomes_feijoada.txt`). `create_weighted_text` now uses
+      the name's words: `receita_pao-de.queijo.txt` → `receita pao de queijo`.
+- [ ] **Better folder names.** YAKE on a cluster's concatenated text favours
+      one document's frequent phrase (`Bach_bio`, `Eduardo_gomes_feijoada` from
+      "Brigadeiro Eduardo Gomes"). Class-based TF-IDF (terms frequent in this
+      cluster, rare in the others; `TfidfVectorizer` is already installed)
+      would name what the cluster's files *share*. Next quality lever.
+- [x] **Calinski-Harabasz voted k=2 on nearly every real folder**, so the
+      median collapsed to min(elbow, silhouette). It bit on the 68-file demo:
+      k=4, adjusted Rand 0.35. Swapped for Davies-Bouldin (lower = better):
+      k=10, ARI 0.85; the 32-file personal test folder chose k=9 either way.
+- [ ] **One-offs still get glued to a cluster when k is large enough to give
+      them one.** On the 68-file demo, chess and origami join the two
+      football-rules texts. Misc only catches files far from their *own*
+      centroid; a min-cluster-size rule (fold clusters of 1-2 into Misc) would
+      be the next small step if it matters on real folders.
 
 ## Features (local-only, keep them lightweight — stdlib/already-installed deps first)
 
@@ -119,10 +150,19 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
 - [x] **A saved-defaults config file** (e.g. `~/.config/file-organizer.toml`,
       stdlib `tomllib` — Python 3.11+, already a floor we could require) so
       people don't retype `--path-weight`/`--max-clusters`/etc. every run.
-      `requires-python` bumped to `>=3.11` (CI already ran on 3.11).
-- [ ] **More readable formats** (`.md`, `.csv`, `.rtf`, `.odt`, `.pptx`,
-      `.xlsx`) — only if someone actually hits a directory full of these;
-      don't build ahead of a real need.
+      `requires-python` now `>=3.12` (numpy 2.5 has no 3.11 wheels).
+- [x] **More readable formats** — `.md`/`.csv` (plain text), `.pptx`/`.odt`
+      (zip + XML, same reader as `.docx`: `_read_zipped_xml`). Still not done:
+      `.rtf`, `.xlsx` — no real need seen yet.
+- [x] **`--copy`** — copy instead of move; undo deletes the copies, never the
+      last one.
+- [x] **`--report DIR`** — document map, k-selection and similarity charts
+      (`report.py`, matplotlib as the `[viz]` extra). Also what found the two
+      clustering bugs above.
+- [x] **Progress bar** on embedding (hidden under `--quiet`).
+- [x] **Undo cleans up** the emptied cluster folders and the manifest.
+- [x] **Vosk**: models in `~/.cache/vosk` (were re-downloaded after every
+      reboot from the temp dir); transcription language follows `--lang`.
 
 ## Housekeeping
 
@@ -130,6 +170,11 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
       after this TODO) — `main` is ahead of `origin/main` and the new
       `.github/workflows/tests.yml` has never actually run, so CI going green is
       unverified, not confirmed.
+- [x] **CI never passed** — every run failed at `pip install`: `numpy==2.5.1`
+      has no Python 3.11 wheels. CI now on 3.12, CPU-only torch (the PyPI build
+      pulled 14 CUDA packages), pip cache. Green unconfirmed until next push.
+- [x] **PyPDF2 → pypdf** (PyPDF2 is deprecated; same API), and its per-PDF
+      "Ignoring wrong pointing object" warnings silenced.
 - [x] **Delete or wire in `analyze_document_content`** in `utils.py:116` —
       computes a suggested extraction length but is never called anywhere in the
       pipeline. Dead code; either use it or remove it. Deleted (no caller, no

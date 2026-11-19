@@ -35,7 +35,10 @@ def parse_args():
     parser.add_argument("--max-clusters", type=int, default=config.get("max_clusters", 10), help="Upper bound on the number of clusters to consider (default: 10)")
     parser.add_argument("--keyword-ngram", type=int, default=config.get("keyword_ngram", 2), help="Max n-gram size for YAKE keyword extraction (default: 2)")
     parser.add_argument("--keyword-count", type=int, default=config.get("keyword_count", 5), help="Number of keywords YAKE extracts per cluster, top 2 are used for folder names (default: 5)")
-    parser.add_argument("--lang", default=config.get("lang", "en"), help="Language(s) of your documents, for keyword stopwords; comma-separated for mixed directories (e.g. 'pt', 'pt,en'; default: en)")
+    parser.add_argument("--lang", default=config.get("lang", "en"), help="Language(s) of your documents, for keyword stopwords and audio transcription; comma-separated for mixed directories (e.g. 'pt', 'pt,en'; default: en)")
+    parser.add_argument("--misc-threshold", type=float, default=config.get("misc_threshold", 2.0), help="Send documents farther than mean + N std from their cluster centre to a 'Misc' folder; 0 disables (default: 2.0)")
+    parser.add_argument("--copy", action="store_true", default=config.get("copy", False), help="Copy files into the organized folders instead of moving them (originals stay put)")
+    parser.add_argument("--report", metavar="DIR", help="Save charts of this run (document map, cluster-count selection, similarity heatmap) as PNGs in DIR; needs matplotlib")
     parser.add_argument("--undo", metavar="MANIFEST", help="Undo a previous run using its manifest JSON file, moving files back to where they started")
     parser.add_argument("--include-all", action="store_true", default=config.get("include_all", False), help="Don't skip hidden entries or known noise directories (.git, __pycache__, node_modules, etc.) - process everything")
     parser.add_argument("--exclude", action="append", default=list(config.get("exclude", [])), metavar="PATTERN", help="Glob pattern to skip (e.g. '*.log'); can be given multiple times")
@@ -70,6 +73,7 @@ def main():
             skip_noise=not args.include_all,
             exclude_patterns=args.exclude,
             lang=args.lang,
+            misc_threshold=args.misc_threshold,
         )
     except Exception as e:
         logger.error(f"Failed to initialize analyzer: {e}")
@@ -87,17 +91,27 @@ def main():
         for f in files:
             print(f"   - {f}")
 
+    if args.report:
+        try:
+            from .report import save_report
+            saved = save_report(analyzer.last_run, folder_structure, args.report)
+        except Exception as e:
+            logger.error(f"Report failed: {e}")
+            return 1
+        print("\nReport saved:\n" + "\n".join(f"   - {p}" for p in saved))
+
     if args.dry_run:
         print("\nDry run - no files were moved.")
         return 0
 
+    verb = "Copy" if args.copy else "Move"
     if not args.yes:
-        confirm = input("\nMove files as shown above? [y/N]: ").strip().lower()
+        confirm = input(f"\n{verb} files as shown above? [y/N]: ").strip().lower()
         if confirm != "y":
             print("Aborted - no files were moved.")
             return 0
 
-    analyzer.organize_files(folder_structure, path, args.target_dir)
+    analyzer.organize_files(folder_structure, path, args.target_dir, copy=args.copy)
     return 0
 
 if __name__ == "__main__":

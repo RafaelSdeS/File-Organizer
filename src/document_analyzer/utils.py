@@ -1,8 +1,10 @@
-import PyPDF2
-from PyPDF2.errors import PdfReadError
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 import pandas as pd
+import fnmatch
 import logging
 import os
+import re
 import chardet
 import zipfile
 import xml.etree.ElementTree as ET
@@ -25,17 +27,41 @@ except ImportError:
     _vosk_model = None
 
 logger = logging.getLogger(__name__)
+# pypdf warns about every recoverable quirk in a PDF ("Ignoring wrong pointing
+# object ..."), dozens per real-world file; only real failures matter here.
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 audio_extensions = [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a", ".aiff", ".opus"]
 
-_DOCX_TEXT_TAG = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"
+# Office formats are zips of XML parts: (member glob, tags holding the text).
+# pptx has one part per slide (slide1.xml, slide2.xml, ...).
+_ODF_TEXT = "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}"
+ZIPPED_XML_FORMATS = {
+    ".docx": ("word/document.xml", {"{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"}),
+    ".pptx": ("ppt/slides/slide*.xml", {"{http://schemas.openxmlformats.org/drawingml/2006/main}t"}),
+    ".odt": ("content.xml", {_ODF_TEXT + "p", _ODF_TEXT + "h"}),
+}
 
 
-def _read_docx(file_path):
+def _read_zipped_xml(file_path, pattern, tags):
+    """Text of every `tags` element in the zip members matching `pattern`.
+
+    Raises KeyError if no member matches (same as ZipFile.open on a missing
+    name), so callers treat it like any other malformed file.
+    """
     with zipfile.ZipFile(file_path) as archive:
-        with archive.open("word/document.xml") as f:
-            tree = ET.parse(f)
-    return "\n".join(node.text for node in tree.iter(_DOCX_TEXT_TAG) if node.text)
+        members = sorted(
+            (name for name in archive.namelist() if fnmatch.fnmatchcase(name, pattern)),
+            key=lambda name: int(re.sub(r"\D", "", name) or 0),  # slide2 before slide10
+        )
+        if not members:
+            raise KeyError(pattern)
+        texts = []
+        for member in members:
+            with archive.open(member) as f:
+                root = ET.parse(f).getroot()
+            texts.extend("".join(node.itertext()) for node in root.iter() if node.tag in tags)
+    return "\n".join(text for text in texts if text)
 
 def read_file(file_path):
     try:
@@ -59,7 +85,7 @@ def read_file(file_path):
         if ext == '.pdf':
             try:
                 with open(file_path, 'rb') as file:
-                    reader = PyPDF2.PdfReader(file)
+                    reader = PdfReader(file)
                     text = ""
                     for page in reader.pages:
                         page_text = page.extract_text()
@@ -73,19 +99,19 @@ def read_file(file_path):
                 logger.error(f"Invalid PDF format: {file_path} - {str(e)}")
                 raise ValueError(f"Invalid PDF format: {file_path}")
         
-        # Handle Word documents (docx is a zip of XML parts)
-        elif ext == '.docx':
+        # Handle Office documents (docx/pptx/odt are zips of XML parts)
+        elif ext in ZIPPED_XML_FORMATS:
             try:
-                text = _read_docx(file_path)
+                text = _read_zipped_xml(file_path, *ZIPPED_XML_FORMATS[ext])
                 if not text:
-                    logger.info(f"No text found in DOCX file: {file_path}")
+                    logger.info(f"No text found in {ext} file: {file_path}")
                 return text
             except (zipfile.BadZipFile, KeyError, ET.ParseError) as e:
-                logger.error(f"Invalid DOCX format: {file_path} - {str(e)}")
-                raise ValueError(f"Invalid DOCX format: {file_path}")
+                logger.error(f"Invalid {ext} format: {file_path} - {str(e)}")
+                raise ValueError(f"Invalid {ext} format: {file_path}")
 
         # Handle text files
-        elif ext in ['.txt', '.xml']:
+        elif ext in ['.txt', '.md', '.csv', '.xml']:
             try:
                 # Detect encoding automatically
                 with open(file_path, 'rb') as file:
@@ -115,9 +141,14 @@ def read_file(file_path):
         raise
 
 def create_weighted_text(path, content, path_weight=2):
+        # The name as plain words: "receita_pao-de.queijo.txt" -> "receita pao
+        # de queijo". The extension is file type, not topic, and glued
+        # separators turn a name into one unknown token - for the embedding,
+        # and for YAKE, which used to put "feijoada.txt" into folder names.
+        name = re.sub(r"[\W_]+", " ", os.path.splitext(str(path))[0]).strip() or str(path)
         # Space-separated: "a.pdfa.pdf" tokenizes as one unknown blob, so the
         # repetition added noise instead of weight.
-        weighted_path = " ".join([str(path)] * path_weight)
+        weighted_path = " ".join([name] * path_weight)
         if pd.isna(content):
             return weighted_path
         return weighted_path + " " + content
@@ -145,6 +176,10 @@ VOSK_LANGUAGE_MODELS = {
     "ca": "vosk-model-small-ca-0.4",           # Catalan
     "cs": "vosk-model-small-cs-0.4-rhasspy",   # Czech
 }
+
+# Persistent, unlike the system temp dir (often wiped on reboot, which meant
+# re-downloading the model every boot).
+VOSK_MODEL_DIR = os.path.join(os.path.expanduser("~"), ".cache", "vosk")
 
 # Default language for transcription
 _vosk_language = "en"
@@ -182,22 +217,21 @@ def _get_vosk_model(lang_code=None):
     if lang in _vosk_models:
         return _vosk_models[lang]
     
-    import tempfile
     import urllib.request
-    import zipfile
-    
+
     model_name = VOSK_LANGUAGE_MODELS.get(lang, VOSK_LANGUAGE_MODELS["en"])
-    model_path = os.path.join(tempfile.gettempdir(), model_name)
-    
+    model_path = os.path.join(VOSK_MODEL_DIR, model_name)
+
     if not os.path.exists(model_path):
-        logger.info(f"Downloading Vosk model for language '{lang}'...")
+        logger.info(f"Downloading Vosk model for language '{lang}' to {VOSK_MODEL_DIR}...")
         model_url = f"https://alphacephei.com/vosk/models/{model_name}.zip"
-        zip_path = os.path.join(tempfile.gettempdir(), f"vosk-model-{lang}.zip")
-        
+        zip_path = os.path.join(VOSK_MODEL_DIR, f"{model_name}.zip")
+
         try:
+            os.makedirs(VOSK_MODEL_DIR, exist_ok=True)
             urllib.request.urlretrieve(model_url, zip_path)
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(tempfile.gettempdir())
+                zip_ref.extractall(VOSK_MODEL_DIR)
             os.remove(zip_path)
         except Exception as e:
             logger.error(f"Failed to download Vosk model for '{lang}': {str(e)}")
@@ -211,9 +245,11 @@ def _get_vosk_model(lang_code=None):
 def _convert_to_wav(input_path):
     """Convert audio file to WAV format suitable for Vosk (16kHz, mono, 16-bit)."""
     import tempfile
-    
-    output_path = tempfile.mktemp(suffix=".wav")
-    
+
+    # mkstemp creates the file atomically (mktemp only picks a name - racy).
+    fd, output_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+
     try:
         # Use ffmpeg to convert audio to the required format
         cmd = [
@@ -224,18 +260,17 @@ def _convert_to_wav(input_path):
             output_path
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            logger.warning(f"ffmpeg conversion failed: {result.stderr}")
-            return None
-        
-        return output_path
+
+        if result.returncode == 0:
+            return output_path
+        logger.warning(f"ffmpeg conversion failed: {result.stderr}")
     except FileNotFoundError:
         logger.warning("ffmpeg not found, cannot convert audio file")
-        return None
     except Exception as e:
         logger.warning(f"Error converting audio file: {str(e)}")
-        return None
+
+    os.remove(output_path)
+    return None
 
 def transcribe_audio(file_path, max_duration=60):
     """

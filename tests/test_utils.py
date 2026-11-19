@@ -39,9 +39,57 @@ class TestReadFile(unittest.TestCase):
 
     def test_unsupported_extension_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "data.csv")
+            path = os.path.join(tmp, "data.xyz")
             with open(path, "w") as f:
                 f.write("a,b,c")
+            with self.assertRaises(ValueError):
+                read_file(path)
+
+    def test_markdown_and_csv_read_as_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, body in (("notes.md", "# Title\nbody"), ("data.csv", "a,b\n1,2")):
+                path = os.path.join(tmp, name)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(body)
+                self.assertEqual(read_file(path), body)
+
+    def test_pptx_file_reads_slides_in_numeric_order(self):
+        slide = (
+            '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+            'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+            '<p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>{}</a:t></a:r></a:p>'
+            '</p:txBody></p:sp></p:spTree></p:cSld></p:sld>'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "deck.pptx")
+            with zipfile.ZipFile(path, "w") as zf:
+                # Written out of order: slide10 must still come after slide2.
+                zf.writestr("ppt/slides/slide10.xml", slide.format("Ten"))
+                zf.writestr("ppt/slides/slide2.xml", slide.format("Two"))
+                zf.writestr("ppt/slides/_rels/slide2.xml.rels", "<Relationships/>")
+            self.assertEqual(read_file(path), "Two\nTen")
+
+    def test_odt_file_keeps_paragraphs_separate(self):
+        content_xml = (
+            '<office:document-content '
+            'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+            'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">'
+            '<office:body><office:text>'
+            '<text:h>Heading</text:h>'
+            '<text:p>Hello <text:span>world</text:span></text:p>'
+            '</office:text></office:body></office:document-content>'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "doc.odt")
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("content.xml", content_xml)
+            self.assertEqual(read_file(path), "Heading\nHello world")
+
+    def test_office_file_without_expected_part_raises_value_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "empty.pptx")
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("docProps/app.xml", "<Properties/>")
             with self.assertRaises(ValueError):
                 read_file(path)
 
@@ -58,7 +106,7 @@ class TestReadFile(unittest.TestCase):
                 zf.writestr("word/document.xml", document_xml)
             self.assertEqual(read_file(path), "Hello world")
 
-    @patch('src.document_analyzer.utils.PyPDF2.PdfReader')
+    @patch('src.document_analyzer.utils.PdfReader')
     def test_pdf_file(self, mock_reader_cls):
         mock_page = MagicMock()
         mock_page.extract_text.return_value = "Page text"
@@ -70,9 +118,9 @@ class TestReadFile(unittest.TestCase):
                 f.write(b"%PDF-1.4 fake content")
             self.assertEqual(read_file(path), "Page text")
 
-    @patch('src.document_analyzer.utils.PyPDF2.PdfReader')
+    @patch('src.document_analyzer.utils.PdfReader')
     def test_malformed_pdf_raises_value_error(self, mock_reader_cls):
-        from PyPDF2.errors import PdfReadError
+        from pypdf.errors import PdfReadError
         mock_reader_cls.side_effect = PdfReadError("EOF marker not found")
 
         with tempfile.TemporaryDirectory() as tmp:
