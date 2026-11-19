@@ -124,25 +124,51 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
       names** (`Eduardo_gomes_feijoada.txt`). `create_weighted_text` now uses
       the name's words: `receita_pao-de.queijo.txt` → `receita pao de queijo`.
 - [ ] **Better folder names.** YAKE on a cluster's concatenated text favours
-      one document's frequent phrase (`Bach_bio`, `Eduardo_gomes_feijoada` from
-      "Brigadeiro Eduardo Gomes"). Class-based TF-IDF (terms frequent in this
-      cluster, rare in the others; `TfidfVectorizer` is already installed)
-      would name what the cluster's files *share*. Next quality lever.
+      one document's frequent phrase (`Bach_bio_piano`, `Buenos_aires_city`).
+      Tried for v0.2.0 on the same clusters (demo + a real 32-file folder),
+      none consistently better, so YAKE stays - don't re-try these without a
+      new idea:
+      - class-based TF-IDF: `Piano_musical`, `Tokyo_aires`; on real PDFs it
+        surfaces extraction garbage (`Tensªo_vocœ`, `Oes_equa`);
+      - share-of-files × rarity across clusters: generic words
+        (`Envolve_jogadores`, `Eficaz_virus`);
+      - YAKE candidates re-ranked by share of files: better on some demo
+        folders (`Music_musical`, `Inflação_central_bank`), worse on real ones
+        (`Brazil_tools`);
+      - filename repeated once instead of twice: changes 3 of 18 names, a wash.
+      The real limits are noisy PDF text and that a good name is a summary.
 - [x] **Calinski-Harabasz voted k=2 on nearly every real folder**, so the
       median collapsed to min(elbow, silhouette). It bit on the 68-file demo:
       k=4, adjusted Rand 0.35. Swapped for Davies-Bouldin (lower = better):
       k=10, ARI 0.85; the 32-file personal test folder chose k=9 either way.
-- [ ] **One-offs still get glued to a cluster when k is large enough to give
-      them one.** On the 68-file demo, chess and origami join the two
-      football-rules texts. Misc only catches files far from their *own*
-      centroid; a min-cluster-size rule (fold clusters of 1-2 into Misc) would
-      be the next small step if it matters on real folders.
+- [x] **One-offs got glued to a cluster** (chess and origami joined the two
+      football-rules texts). Misc now also takes documents with a negative
+      silhouette (closer to another cluster than their own) and any document
+      left alone in its cluster (`_misc_labels`). Measured against the
+      distance-only rule, per-cluster z-scores and singletons alone: demo
+      one-offs caught 2/4 → 3/4 with the same one false positive; on the real
+      folder it pulled out exactly the misplaced files. Chess still joins the
+      football rules (it *is* about game rules).
+- [x] **`--lang auto` is the default.** Without `--lang pt,en` a mixed folder
+      still split by language (demo ARI 0.37). Each file's language is now
+      detected among en/pt/es/fr/de/it/nl by stopword counts - 88/88 right on
+      the demo plus 20 es/fr/de/it/nl excerpts, so plain counting was kept
+      over exclusive-stopword or size-normalised scoring (also 88/88). Files
+      with no stopwords (bare names) form their own group for centring.
+- [x] **Quality regression test** with the real model on the demo
+      (`tests/test_quality.py`, `RUN_QUALITY=1`, own CI job with a cached
+      model). The unit tests mock the model, so before this the language and
+      k-selection bugs only showed up in the charts.
 
 ## Features (local-only, keep them lightweight — stdlib/already-installed deps first)
 
-- [x] **Undo/manifest support** — `--undo` done (see Critical above). Not
-      done: `--history` to list past runs (would mean scanning target dirs
-      for `.file_organizer_manifest_*.json` files, or keeping a central log).
+- [x] **Undo/manifest support** — `--undo` done (see Critical above), and
+      `--history` lists past runs from a central log
+      (`~/.local/state/file-organizer/history.jsonl`) with each undo command.
+- [x] **`--version`**, package at 0.2.0, GitHub release `v0.2.0`.
+- [x] **Scale.** Reading capped at `READ_CHARS` (5000; the model only sees
+      ~512 tokens anyway), silhouette sampled above 2000 files, per-stage
+      timings in the INFO log. Numbers in the README.
 - [x] **`--exclude` pattern(s)** for the noise-filtering item above, for
       cases the default skip list doesn't cover.
 - [x] **`--verbose`/`--quiet`** — logging level is hardcoded to `INFO` in
@@ -152,8 +178,8 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
       people don't retype `--path-weight`/`--max-clusters`/etc. every run.
       `requires-python` now `>=3.12` (numpy 2.5 has no 3.11 wheels).
 - [x] **More readable formats** — `.md`/`.csv` (plain text), `.pptx`/`.odt`
-      (zip + XML, same reader as `.docx`: `_read_zipped_xml`). Still not done:
-      `.rtf`, `.xlsx` — no real need seen yet.
+      (zip + XML, same reader as `.docx`: `_read_zipped_xml`), `.xlsx` (same
+      reader) and `.rtf` (a ~30-line stdlib reader, `_rtf_to_text`).
 - [x] **`--copy`** — copy instead of move; undo deletes the copies, never the
       last one.
 - [x] **`--report DIR`** — document map, k-selection and similarity charts
@@ -172,7 +198,8 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
       unverified, not confirmed.
 - [x] **CI never passed** — every run failed at `pip install`: `numpy==2.5.1`
       has no Python 3.11 wheels. CI now on 3.12, CPU-only torch (the PyPI build
-      pulled 14 CUDA packages), pip cache. Green unconfirmed until next push.
+      pulled 14 CUDA packages), pip cache. Now also Windows, macOS and
+      Python 3.13.
 - [x] **PyPDF2 → pypdf** (PyPDF2 is deprecated; same API), and its per-PDF
       "Ignoring wrong pointing object" warnings silenced.
 - [x] **Delete or wire in `analyze_document_content`** in `utils.py:116` —
