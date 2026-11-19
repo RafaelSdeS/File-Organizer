@@ -1,0 +1,69 @@
+file	topic	language
+sistema_solar.txt	astronomy	pt
+buraco-negro.txt	astronomy	pt
+Via Lactea.md	astronomy	pt
+jupiter_notes.txt	astronomy	en
+supernova.md	astronomy	en
+mars - overview.txt	astronomy	en
+lua.md	astronomy	pt
+galaxy_types.txt	astronomy	en
+feijoada.txt	food	pt
+receita pao de queijo.txt	food	pt
+brigadeiro.md	food	pt
+moqueca_capixaba.txt	food	pt
+coxinha.txt	food	en
+acaraje-recipe.txt	food	en
+churrasco.md	food	en
+tapioca (1).txt	food	pt
+copa-do-mundo.txt	football	pt
+pele.md	football	pt
+regra do impedimento.txt	football	pt
+selecao_brasileira_en.txt	football	en
+penalty_kick.txt	football	en
+flamengo.txt	football	pt
+Ronaldo_R9.md	football	en
+fifa.txt	football	en
+aprendizado_de_maquina.md	machine-learning	pt
+redes neurais.txt	machine-learning	pt
+svm.txt	machine-learning	en
+gradient_descent.md	machine-learning	en
+kmeans.txt	machine-learning	en
+transformers-notes.md	machine-learning	en
+deep learning resumo.txt	machine-learning	pt
+random_forest.txt	machine-learning	en
+beethoven.txt	music	en
+bach_bio.md	music	en
+symphony.txt	music	en
+opera.txt	music	pt
+violino.txt	music	pt
+mozart.txt	music	pt
+piano_history.md	music	en
+orquestra.txt	music	pt
+inflacao.txt	economics	pt
+juros.md	economics	pt
+bolsa de valores.txt	economics	pt
+compound_interest.txt	economics	en
+central-bank.txt	economics	en
+stock market basics.txt	economics	en
+PIB.md	economics	pt
+inflation_targeting.txt	economics	en
+vacinas.txt	medicine	pt
+antibiotics.md	medicine	en
+sistema imune.txt	medicine	pt
+flu_notes.txt	medicine	en
+diabetes.txt	medicine	pt
+virus.md	medicine	en
+penicilina.txt	medicine	pt
+vaccination-schedule.txt	medicine	en
+rio de janeiro.txt	cities	pt
+lisbon_trip.md	cities	en
+salvador.txt	cities	pt
+floripa.txt	cities	en
+paris - roteiro.txt	cities	pt
+buenos_aires.txt	cities	en
+porto-alegre.md	cities	pt
+tokyo.txt	cities	en
+origami.txt	one-off	en
+apicultura.txt	one-off	pt
+knitting.md	one-off	en
+xadrez.txt	one-off	pt
