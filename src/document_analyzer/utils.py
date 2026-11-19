@@ -40,7 +40,51 @@ ZIPPED_XML_FORMATS = {
     ".docx": ("word/document.xml", {"{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"}),
     ".pptx": ("ppt/slides/slide*.xml", {"{http://schemas.openxmlformats.org/drawingml/2006/main}t"}),
     ".odt": ("content.xml", {_ODF_TEXT + "p", _ODF_TEXT + "h"}),
+    # Shared strings plus inline strings in the sheets; workbook.xml always
+    # matches, so a numbers-only workbook reads as "" instead of an error.
+    ".xlsx": ("xl/*.xml", {"{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t"}),
 }
+
+# RTF groups that hold metadata, not document text.
+_RTF_SKIP = {"fonttbl", "colortbl", "stylesheet", "info", "pict", "header", "footer",
+             "listtable", "listoverridetable", "rsidtbl", "themedata", "latentstyles",
+             "datastore", "xmlnstbl", "colorschememapping", "generator"}
+_RTF_TOKEN = re.compile(r"\\([a-zA-Z]+)(-?\d+)? ?|\\'([0-9a-fA-F]{2})|\\(.)|([{}])|([^\\{}]+)", re.S)
+
+
+def _rtf_to_text(rtf):
+    """Plain text of an RTF document: a minimal reader (no dependency) that
+    drops metadata groups, decodes \\'hh (cp1252) and \\uN escapes, and turns
+    paragraph marks into newlines. Enough for clustering, not for rendering."""
+    out, stack, skipping, swallow = [], [], False, 0
+    for word, arg, hexcode, symbol, brace, text in _RTF_TOKEN.findall(rtf):
+        if brace == "{":
+            stack.append(skipping)
+        elif brace == "}":
+            skipping = stack.pop() if stack else False
+        elif symbol == "*" or word in _RTF_SKIP:
+            skipping = True
+        elif skipping:
+            continue
+        elif swallow and (hexcode or text):
+            # The ANSI fallback right after a \\uN escape.
+            swallow -= 1
+            if text and len(text) > 1:
+                out.append(text[1:].replace("\r", "").replace("\n", ""))
+        elif word in ("par", "line", "sect", "page", "row"):
+            out.append("\n")
+        elif word in ("tab", "cell"):
+            out.append("\t")
+        elif word == "u" and arg:
+            out.append(chr(int(arg) % 65536))
+            swallow = 1
+        elif hexcode:
+            out.append(bytes([int(hexcode, 16)]).decode("cp1252", errors="replace"))
+        elif symbol:
+            out.append({"~": " ", "_": "-", "-": ""}.get(symbol, symbol))
+        elif text:
+            out.append(text.replace("\r", "").replace("\n", ""))
+    return re.sub(r"[ \t]+", " ", "".join(out)).strip()
 
 
 def _read_zipped_xml(file_path, pattern, tags):
@@ -109,6 +153,14 @@ def read_file(file_path):
             except (zipfile.BadZipFile, KeyError, ET.ParseError) as e:
                 logger.error(f"Invalid {ext} format: {file_path} - {str(e)}")
                 raise ValueError(f"Invalid {ext} format: {file_path}")
+
+        elif ext == '.rtf':
+            with open(file_path, 'rb') as file:
+                # RTF is 7-bit ASCII; anything else is escaped inside it.
+                text = _rtf_to_text(file.read().decode('latin-1'))
+            if not text:
+                logger.info(f"No text found in RTF file: {file_path}")
+            return text
 
         # Handle text files
         elif ext in ['.txt', '.md', '.csv', '.xml']:

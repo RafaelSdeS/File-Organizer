@@ -27,7 +27,7 @@ EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
 # tasks like clustering.
 EMBEDDING_PREFIX = "query: "
 
-readable_files = [".pdf", ".txt", ".md", ".csv", ".xml", ".docx", ".pptx", ".odt"]
+readable_files = [".pdf", ".txt", ".md", ".csv", ".xml", ".rtf", ".docx", ".pptx", ".odt", ".xlsx"]
 audio_files = [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a", ".aiff", ".opus"]
 
 # Dropped into every cluster folder organize_files creates, so a later run

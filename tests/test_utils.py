@@ -85,6 +85,42 @@ class TestReadFile(unittest.TestCase):
                 zf.writestr("content.xml", content_xml)
             self.assertEqual(read_file(path), "Heading\nHello world")
 
+    def test_xlsx_file_reads_shared_and_inline_strings(self):
+        ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "budget.xlsx")
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("xl/workbook.xml", f'<workbook {ns}><sheets><sheet name="S1"/></sheets></workbook>')
+                zf.writestr("xl/sharedStrings.xml",
+                            f'<sst {ns}><si><t>Aluguel</t></si><si><r><t>Mercado</t></r></si></sst>')
+                zf.writestr("xl/worksheets/sheet1.xml",
+                            f'<worksheet {ns}><sheetData><row><c t="inlineStr"><is><t>Total</t></is></c>'
+                            f'<c><v>42</v></c></row></sheetData></worksheet>')
+            self.assertEqual(read_file(path).split("\n"), ["Aluguel", "Mercado", "Total"])
+
+    def test_xlsx_with_numbers_only_reads_as_empty(self):
+        ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "numbers.xlsx")
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("xl/workbook.xml", f"<workbook {ns}/>")
+                zf.writestr("xl/worksheets/sheet1.xml", f"<worksheet {ns}><sheetData/></worksheet>")
+            self.assertEqual(read_file(path), "")
+
+    def test_rtf_file_drops_metadata_and_decodes_escapes(self):
+        rtf = (r"{\rtf1\ansi\deff0{\fonttbl{\f0 Times New Roman;}}{\colortbl;\red0\green0\blue0;}"
+               r"{\*\generator Riched20;}{\info{\author Someone}}\f0\fs24 Ol\'e1 mundo, caf\u233?."
+               r"\par Segunda {\b linha}\par}")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "carta.rtf")
+            with open(path, "w", encoding="ascii") as f:
+                f.write(rtf)
+            text = read_file(path)
+        self.assertEqual(text.split("\n")[0].strip(), "Olá mundo, café.")
+        self.assertIn("Segunda linha", text)
+        for noise in ("Times New Roman", "Riched20", "Someone", "red0"):
+            self.assertNotIn(noise, text)
+
     def test_office_file_without_expected_part_raises_value_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "empty.pptx")
