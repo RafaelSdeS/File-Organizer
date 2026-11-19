@@ -8,13 +8,14 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
 
+import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
-from src.document_analyzer.analyzer import DocumentAnalyzer, undo_organize, _center_by_language, _detect_languages, _elbow_k, _folder_name, _misc_labels, _stopwords, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES, MISC_FOLDER, AUTO_LANGS
+from src.document_analyzer.analyzer import DocumentAnalyzer, read_history, undo_organize, _center_by_language, _detect_languages, _elbow_k, _folder_name, _misc_labels, _stopwords, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES, MISC_FOLDER, AUTO_LANGS
 from src.document_analyzer.utils import read_file, create_weighted_text
 
 class TestDocumentAnalyzer(unittest.TestCase):
@@ -28,6 +29,14 @@ class TestDocumentAnalyzer(unittest.TestCase):
         mock_kw_cls = kw_patcher.start()
         self.addCleanup(model_patcher.stop)
         self.addCleanup(kw_patcher.stop)
+
+        # Never append to the real ~/.local/state history from tests.
+        history_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(history_dir.cleanup)
+        self.history_path = os.path.join(history_dir.name, "history.jsonl")
+        history_patcher = patch('src.document_analyzer.analyzer.HISTORY_PATH', self.history_path)
+        history_patcher.start()
+        self.addCleanup(history_patcher.stop)
 
         self.analyzer = DocumentAnalyzer()
         self.mock_model = mock_model_cls.return_value
@@ -498,6 +507,25 @@ class TestDocumentAnalyzer(unittest.TestCase):
             # all) and the fully-replayed manifest are both removed.
             self.assertFalse((source_dir / "Cluster_one").exists())
             self.assertFalse(os.path.exists(manifest_path))
+        finally:
+            shutil.rmtree(source_dir, ignore_errors=True)
+
+    def test_organize_files_records_history_newest_first(self):
+        source_dir = Path("test_history_source")
+        try:
+            source_dir.mkdir(exist_ok=True)
+            for name in ("a.txt", "b.txt"):
+                (source_dir / name).write_text(name)
+            first = self.analyzer.organize_files({"One": ["a.txt"]}, str(source_dir))
+            with open(self.history_path, "a") as f:
+                f.write("not json\n")  # a corrupt line must not break --history
+            second = self.analyzer.organize_files({"Two": ["b.txt"]}, str(source_dir), copy=True)
+
+            entries = read_history()
+            self.assertEqual([e["manifest"] for e in entries],
+                             [os.path.abspath(second), os.path.abspath(first)])
+            self.assertEqual((entries[0]["files"], entries[0]["copy"]), (1, True))
+            self.assertEqual(entries[1]["source_dir"], os.path.abspath(source_dir))
         finally:
             shutil.rmtree(source_dir, ignore_errors=True)
 

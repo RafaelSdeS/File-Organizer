@@ -1,10 +1,11 @@
 import argparse
+import os
 import logging
 import sys
 import tomllib
 from pathlib import Path
 
-from .analyzer import DocumentAnalyzer, undo_organize
+from .analyzer import DocumentAnalyzer, read_history, undo_organize
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +23,33 @@ def _load_config():
         return {}
 
 
+def _version():
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version("document-analyzer")
+    except PackageNotFoundError:  # running from a checkout via python -m src...
+        return "dev"
+
+
+def _print_history():
+    entries = read_history()
+    if not entries:
+        print("No runs recorded yet.")
+    for e in entries:
+        verb = "copied" if e.get("copy") else "moved"
+        where = e["source_dir"] if e["source_dir"] == e["target_dir"] else f"{e['source_dir']} -> {e['target_dir']}"
+        status = f"undo: organize-files --undo \"{e['manifest']}\"" if os.path.exists(e["manifest"]) else "undone"
+        print(f"{e['time']}  {e['files']} files {verb}  {where}\n    {status}")
+
+
 def parse_args():
     config = _load_config()
     parser = argparse.ArgumentParser(
         description="Cluster and organize files in a directory by content similarity."
     )
     parser.add_argument("path", nargs="?", help="Directory to organize (prompted if omitted)")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {_version()}")
+    parser.add_argument("--history", action="store_true", help="List past runs (newest first) with the command to undo each one")
     parser.add_argument("--target-dir", default=config.get("target_dir"), help="Move organized files here instead of in place")
     parser.add_argument("--dry-run", action="store_true", help="Show the proposed structure without moving files")
     parser.add_argument("-y", "--yes", action="store_true", help="Move files without confirmation prompt")
@@ -53,6 +75,10 @@ def main():
 
     level = logging.DEBUG if args.verbose else logging.WARNING if args.quiet else logging.INFO
     logging.basicConfig(level=level, format="%(levelname)s: %(message)s", force=True)
+
+    if args.history:
+        _print_history()
+        return 0
 
     if args.undo:
         try:

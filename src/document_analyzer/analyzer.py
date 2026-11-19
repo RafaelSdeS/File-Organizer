@@ -34,6 +34,12 @@ audio_files = [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a", ".aiff",
 # recognizes and skips its own output instead of re-clustering it.
 ORGANIZED_MARKER = ".file_organizer_created"
 MANIFEST_PREFIX = ".file_organizer_manifest_"
+# One JSON line per organize run, for --history (manifests live next to
+# the files they moved, so there is otherwise no single place to list them).
+HISTORY_PATH = os.path.join(
+    os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state"),
+    "file-organizer", "history.jsonl",
+)
 # Folder for documents too far from every cluster centroid to belong anywhere.
 MISC_FOLDER = "Misc"
 
@@ -551,8 +557,40 @@ class DocumentAnalyzer:
                 json.dump(manifest, f, indent=2)
             print(f"\nManifest written to {manifest_path}")
             print(f"Undo with: organize-files --undo {manifest_path}")
+            _record_history({
+                "time": datetime.now().isoformat(timespec="seconds"),
+                "source_dir": os.path.abspath(source_dir),
+                "target_dir": os.path.abspath(target_dir),
+                "manifest": os.path.abspath(manifest_path),
+                "files": len(manifest),
+                "copy": copy,
+            })
 
             return manifest_path
+
+
+def _record_history(entry):
+    # A convenience log: failing to write it must never fail the run.
+    try:
+        os.makedirs(os.path.dirname(HISTORY_PATH), exist_ok=True)
+        with open(HISTORY_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError as e:
+        logger.warning(f"Could not record this run in {HISTORY_PATH}: {e}")
+
+
+def read_history():
+    """Past organize runs, newest first (malformed lines skipped)."""
+    if not os.path.exists(HISTORY_PATH):
+        return []
+    entries = []
+    with open(HISTORY_PATH, encoding="utf-8") as f:
+        for line in f:
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return entries[::-1]
 
 
 def undo_organize(manifest_path):

@@ -172,6 +172,26 @@ class TestMainCLI(unittest.TestCase):
             skip_noise=True, exclude_patterns=[], lang="auto", misc_threshold=2.0
         )
 
+    def test_history_lists_runs_without_loading_the_model(self):
+        entries = [
+            {"time": "2026-11-19T10:00:00", "source_dir": "/d", "target_dir": "/d",
+             "manifest": "/d/.file_organizer_manifest_x.json", "files": 3, "copy": False},
+        ]
+        with patch('src.document_analyzer.main.read_history', return_value=entries), \
+             patch('builtins.print') as mock_print:
+            self._run(["--history"])
+        printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
+        self.assertIn("3 files moved", printed)
+        self.assertIn("undone", printed)  # that manifest doesn't exist on disk
+        self.mock_analyzer_cls.assert_not_called()
+
+    def test_version_flag_prints_version_and_exits(self):
+        with patch('builtins.print'), self.assertRaises(SystemExit) as exit_info, \
+             patch('sys.stdout'):
+            self._run(["--version"])
+        self.assertEqual(exit_info.exception.code, 0)
+        self.mock_analyzer_cls.assert_not_called()
+
     def test_undo_flag_calls_undo_organize_and_skips_pipeline(self):
         with patch('src.document_analyzer.main.undo_organize') as mock_undo:
             self._run(["--undo", "manifest.json"])
