@@ -35,7 +35,7 @@ def parse_args():
     parser.add_argument("--max-clusters", type=int, default=config.get("max_clusters", 10), help="Upper bound on the number of clusters to consider (default: 10)")
     parser.add_argument("--keyword-ngram", type=int, default=config.get("keyword_ngram", 2), help="Max n-gram size for YAKE keyword extraction (default: 2)")
     parser.add_argument("--keyword-count", type=int, default=config.get("keyword_count", 5), help="Number of keywords YAKE extracts per cluster, top 2 are used for folder names (default: 5)")
-    parser.add_argument("--lang", default=config.get("lang", "en"), help="Language(s) of your documents, for keyword stopwords and audio transcription; comma-separated for mixed directories (e.g. 'pt', 'pt,en'; default: en)")
+    parser.add_argument("--lang", default=config.get("lang", "auto"), help="Language(s) of your documents: 'auto' (default) detects each file's among en/pt/es/fr/de/it/nl; or a comma-separated list such as 'pt' or 'pt,en' to restrict it. Picks the stopwords for folder names, centres embeddings per language, and sets the audio transcription language (English under auto)")
     parser.add_argument("--misc-threshold", type=float, default=config.get("misc_threshold", 2.0), help="Send documents farther than mean + N std from their cluster centre to a 'Misc' folder; 0 disables (default: 2.0)")
     parser.add_argument("--copy", action="store_true", default=config.get("copy", False), help="Copy files into the organized folders instead of moving them (originals stay put)")
     parser.add_argument("--report", metavar="DIR", help="Save charts of this run (document map, cluster-count selection, similarity heatmap) as PNGs in DIR; needs matplotlib")

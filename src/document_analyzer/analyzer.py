@@ -49,6 +49,10 @@ def _elbow_k(K, distortions):
         return None
     return K[int(np.argmax(second_derivative)) + 1]
 
+# Languages --lang auto chooses among (YAKE ships stopwords for 34; these
+# are the common ones, which keeps close pairs like pt/gl or no/da out).
+AUTO_LANGS = ["en", "pt", "es", "fr", "de", "it", "nl"]
+
 # Known-noise directory/file names that aren't already caught by the
 # hidden-entry (dot-prefix) check - e.g. .git, .DS_Store are dotfiles already.
 DEFAULT_SKIP_NAMES = {"__pycache__", "node_modules"}
@@ -77,11 +81,17 @@ def _stopwords(langs):
 
 
 def _detect_languages(texts, stopword_sets):
-    """Per text, the language whose stopwords it uses most (ties: first listed)."""
+    """Per text, the language whose stopwords it uses most (ties: first
+    listed), or "" for a text with no stopwords at all - a bare filename, an
+    image. Plain counting got all 88 test texts right (the 68 pt/en demo
+    files plus 20 es/fr/de/it/nl Wikipedia excerpts) across AUTO_LANGS.
+    """
     detected = []
     for text in texts:
         words = re.findall(r"\w+", text.lower())
-        detected.append(max(stopword_sets, key=lambda lang: sum(w in stopword_sets[lang] for w in words)))
+        scores = {lang: sum(w in stopwords for w in words) for lang, stopwords in stopword_sets.items()}
+        best = max(scores, key=scores.get)
+        detected.append(best if scores[best] else "")
     return np.array(detected)
 
 
@@ -137,22 +147,25 @@ class DocumentAnalyzer:
     #Main class for analyzing and organizing documents using AI-powered clustering.
     #Uses sentence embeddings for content similarity analysis and YAKE for keyword extraction.
 
-    def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, skip_noise=True, exclude_patterns=None, lang="en", misc_threshold=2.0):
+    def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, skip_noise=True, exclude_patterns=None, lang="auto", misc_threshold=2.0):
         if max_clusters < 3:
             raise ValueError("max_clusters must be at least 3 (k=2 needs to be a testable candidate)")
         self.model = SentenceTransformer(EMBEDDING_MODEL)
-        # lang picks YAKE's stopword list - with the wrong one, the target
-        # language's stopwords ("de", "do", "para", ...) become folder names.
-        # Comma-separated ("pt,en") unions the lists for mixed directories.
-        langs = [part.strip() for part in lang.split(",") if part.strip()] or ["en"]
-        self.kw_extractor = yake.KeywordExtractor(
-            lan=langs[0], n=yake_ngram, top=yake_top, stopwords=_stopwords(langs)
-        )
-        # Several languages: detect each document's, to center embeddings per
-        # language before clustering (see _center_by_language).
-        self.stopword_sets = _stopword_sets(langs) if len(langs) > 1 else None
-        # Audio transcription follows the primary document language too.
-        set_transcription_language(langs[0])
+        # lang picks the stopword lists - with the wrong one, the target
+        # language's stopwords ("de", "do", "para", ...) become folder names -
+        # and the languages each document is detected among, so embeddings
+        # can be centred per language (see _center_by_language).
+        # "auto" detects among AUTO_LANGS; a comma-separated list ("pt,en")
+        # restricts detection to those.
+        self.auto_lang = lang.strip().lower() == "auto"
+        langs = AUTO_LANGS if self.auto_lang else [p.strip() for p in lang.split(",") if p.strip()] or ["en"]
+        self.stopword_sets = _stopword_sets(langs)
+        self.yake_ngram, self.yake_top = yake_ngram, yake_top
+        # Under auto, rebuilt in analyze_directory once the languages are known.
+        self.kw_extractor = self._keyword_extractor(["en"] if self.auto_lang else langs)
+        # Audio is transcribed while scanning, before any language is
+        # detected, so under auto it stays English.
+        set_transcription_language("en" if self.auto_lang else langs[0])
         self.path_weight = path_weight
         self.max_clusters = max_clusters
         self.skip_noise = skip_noise
@@ -276,10 +289,13 @@ class DocumentAnalyzer:
             except Exception as e:
                 raise RuntimeError(f"Failed to generate embeddings: {str(e)}")
 
-            if self.stopword_sets:
-                languages = _detect_languages(df["Text"], self.stopword_sets)
-                logger.info(f"Detected languages: {dict(Counter(languages.tolist()))}")
-                embeddings = _center_by_language(embeddings, languages)
+            languages = _detect_languages(df["Text"], self.stopword_sets)
+            counts = Counter(lang or "none" for lang in languages.tolist())
+            logger.info(f"Detected languages: {dict(counts)}")
+            embeddings = _center_by_language(embeddings, languages)
+            if self.auto_lang:
+                found = [lang for lang in self.stopword_sets if lang in set(languages)]
+                self.kw_extractor = self._keyword_extractor(found or ["en"])
 
             # Find optimal number of clusters using the Elbow method
             logger.info("Determining optimal number of clusters...")
@@ -452,6 +468,11 @@ class DocumentAnalyzer:
             
         return folder_structure
     
+    def _keyword_extractor(self, langs):
+        return yake.KeywordExtractor(
+            lan=langs[0], n=self.yake_ngram, top=self.yake_top, stopwords=_stopwords(langs)
+        )
+
     def _extract_keywords(self, text_list):
 
         full_text = " ".join(text_list)

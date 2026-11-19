@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
-from src.document_analyzer.analyzer import DocumentAnalyzer, undo_organize, _center_by_language, _detect_languages, _elbow_k, _folder_name, _stopwords, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES, MISC_FOLDER
+from src.document_analyzer.analyzer import DocumentAnalyzer, undo_organize, _center_by_language, _detect_languages, _elbow_k, _folder_name, _stopwords, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES, MISC_FOLDER, AUTO_LANGS
 from src.document_analyzer.utils import read_file, create_weighted_text
 
 class TestDocumentAnalyzer(unittest.TestCase):
@@ -37,6 +37,15 @@ class TestDocumentAnalyzer(unittest.TestCase):
         """Test that DocumentAnalyzer initializes correctly"""
         self.assertIsNotNone(self.analyzer.model)
         self.assertIsNotNone(self.analyzer.kw_extractor)
+
+    def test_lang_auto_detects_among_common_languages(self):
+        self.assertTrue(self.analyzer.auto_lang)
+        self.assertEqual(list(self.analyzer.stopword_sets), AUTO_LANGS)
+
+    def test_explicit_lang_list_restricts_detection(self):
+        analyzer = DocumentAnalyzer(lang="pt, en")
+        self.assertFalse(analyzer.auto_lang)
+        self.assertEqual(list(analyzer.stopword_sets), ["pt", "en"])
 
     def test_init_rejects_low_max_clusters(self):
         """max_clusters < 3 leaves no candidate k for _find_optimal_clusters to test."""
@@ -546,8 +555,8 @@ class TestLanguageCentering(unittest.TestCase):
     def test_detect_languages_by_stopword_count(self):
         texts = ["o gato de que a casa", "the cat is out of the house", "receita.txt"]
         detected = _detect_languages(texts, self.STOPWORDS)
-        # No stopwords at all ties, and ties go to the first listed language.
-        self.assertEqual(detected.tolist(), ["pt", "en", "pt"])
+        # A text with no stopwords at all has no detectable language.
+        self.assertEqual(detected.tolist(), ["pt", "en", ""])
 
     def test_centering_removes_language_offset(self):
         """Two topics x two languages, with a language offset bigger than the
