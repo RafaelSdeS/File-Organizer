@@ -36,6 +36,17 @@ class TestMainCLI(unittest.TestCase):
         with patch('sys.argv', ["main.py"] + argv):
             main_module.main()
 
+    def test_output_survives_a_legacy_console_encoding(self):
+        """Windows consoles/pipes can be cp1252, which has no folder emoji:
+        printing the structure used to raise UnicodeEncodeError."""
+        import io
+        raw = io.BytesIO()
+        console = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+        with patch('sys.stdout', console):
+            self._run(["some/dir", "--dry-run"])
+            console.flush()
+        self.assertIn(b"? Cluster_one", raw.getvalue())
+
     def test_dry_run_skips_move(self):
         self._run(["some/dir", "--dry-run"])
         self.mock_analyzer.organize_files.assert_not_called()

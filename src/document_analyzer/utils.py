@@ -176,7 +176,9 @@ def read_file(file_path, max_chars=None):
                 # chardet is slow on big inputs; the first 64 KB are plenty.
                 encoding = chardet.detect(raw_content[:65536])['encoding'] or 'utf-8'
                 # "ignore": a capped read can end mid-character.
-                text = raw_content.decode(encoding, errors='ignore' if max_chars else 'strict').strip()
+                text = raw_content.decode(encoding, errors='ignore' if max_chars else 'strict')
+                # Same newline handling text mode had (Windows files use \r\n).
+                text = text.replace('\r\n', '\n').replace('\r', '\n').strip()
                 if not text:
                     logger.info(f"No text found in file: {file_path}")
                     return ""

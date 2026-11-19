@@ -71,6 +71,12 @@ def parse_args():
 
 
 def main():
+    # A Windows console or pipe may use a legacy code page that can't show
+    # the folder icon or a filename's characters; print "?" instead of crashing.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
     args = parse_args()
 
     level = logging.DEBUG if args.verbose else logging.WARNING if args.quiet else logging.INFO

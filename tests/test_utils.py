@@ -85,6 +85,14 @@ class TestReadFile(unittest.TestCase):
                 zf.writestr("content.xml", content_xml)
             self.assertEqual(read_file(path), "Heading\nHello world")
 
+    def test_windows_line_endings_become_newlines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "dos.txt")
+            with open(path, "wb") as f:
+                f.write(b"line one\r\nline two\rline three\n")
+            self.assertEqual(read_file(path), "line one\nline two\nline three")
+            self.assertEqual(read_file(path, max_chars=100), "line one\nline two\nline three")
+
     def test_max_chars_caps_text_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "long.txt")
