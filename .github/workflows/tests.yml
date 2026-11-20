@@ -22,10 +22,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      # CPU-only torch: the default Linux/Windows build drags in CUDA
-      # packages the tests never use. macOS wheels are CPU-only already.
-      - if: runner.os != 'macOS'
-        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -r requirements.txt
       - run: python -m unittest discover tests
 
@@ -41,8 +37,9 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-intfloat-multilingual-e5-small
-      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+          # Cache keys are immutable: a new key per model file/revision, or the
+          # job would download the model on every run.
+          key: hf-e5-small-onnx-614241f622f53c4eeff9890bdc4f31cfecc418b3
       - run: pip install -r requirements.txt
       - run: python -m unittest tests.test_quality -v
         env:

@@ -190,6 +190,80 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
 - [x] **Vosk**: models in `~/.cache/vosk` (were re-downloaded after every
       reboot from the temp dir); transcription language follows `--lang`.
 
+## Roadmap: why use this over an LLM-per-file sorter (plan of 2026-11-19)
+
+The local competitors (Local-File-Organizer, AI File Sorter, LlamaFS,
+SlothSort...) ask an LLM about each file: hours per 1,000 files, a 2-7 GB
+model, generic categories, several with cloud fallbacks. This one sees the
+whole collection, runs on a CPU in minutes and measures its own quality.
+The items below make "local, provable, learns from your folders" visible.
+No new pip dependency in any of them (the ONNX switch replaces two).
+
+- [x] **Shared helpers** `_read_content`, `_embed`, `_cluster` (the read
+      dispatch was duplicated in `analyze_directory` and `_analyze_folder`).
+- [x] **Provably offline.** Every run used to send a request to
+      huggingface.co (hub checks for updates unless `local_files_only`;
+      measured: the old call retried huggingface.co a dozen times under the
+      guard). Model pinned to a revision, loaded from cache, download only
+      when missing; `test_quality.py` blocks and records network access.
+- [x] **Embedding cache** (sqlite3, key = sha256(revision + embedded text),
+      0600, rows unseen for 90 days pruned, `--no-cache`). Demo re-run:
+      embedding 7.6 s → 0, and the model isn't even loaded (lazy `model`).
+- [x] **Editable plan** `--plan FILE` / `--apply FILE`, per-file score
+      (cosine to its folder's centroid, weakest first), shared validator for
+      user-typed folder/file names. Verified end to end: rename in the
+      file → apply → undo.
+- [x] **Local web UI** `--ui` (stdlib `http.server` on 127.0.0.1, token in
+      the URL fragment + Host check, strict CSP, single `ui.html` with no
+      external URL): analyze, move via a per-file `<select>`, rename, map,
+      apply, history, undo. Checked in headless Chromium at desktop and phone
+      width (console clean); API driven end to end with the real model.
+- [x] **`--into DIR`**: file new documents into the folders you already
+      have (prototype = mean embedding per folder, same global z-rule as
+      Misc); leftovers clustered as usual, < 3 leftovers → Misc. The marker
+      is no longer dropped into existing folders. 10 files taken out of an
+      organized demo: 9 went back; the miss came from a 1-file folder.
+- [x] **OCR** for scanned PDFs and images via the `tesseract` binary (like
+      ffmpeg for audio); the log says how many PDFs have no text layer.
+      Checked with a real tesseract 5.5 (conda-forge): an image-only PDF
+      with a JPEG page read perfectly, a 1-bit CCITT ("fax mode") one with
+      two small errors, a text PNG perfectly, a noise photo -> None; the CPF
+      in the OCR text was flagged; 0.3-0.5 s per file with all 7 languages.
+      CCITT decoding needs Pillow (comes with `[viz]`); without it OCR of
+      that PDF is skipped. JBIG2 untested.
+- [x] **Flag sensitive documents** (CPF with check digits, cards with Luhn
+      and a 2-6 first digit; not CNPJ - every letterhead has one). Flag only.
+- [x] **Folder names from a local LLM**, one call per cluster, Ollama on
+      127.0.0.1 only, proxies bypassed, YAKE fallback (`--llm-names MODEL`,
+      off by default). Measured with Ollama 0.40 + qwen2.5:1.5b on the demo
+      (11 requests, ~13 s): the first prompt gave "StockExch", "WorldCup2022",
+      "Bachmusique" and different names every run. Now: a prompt with
+      examples and explicit don'ts, temperature 0 + seed (same names every
+      run, checked), hyphens count as word breaks (3-word cap), non-Latin
+      script -> YAKE's name ("Classical音乐"). Result vs YAKE: 7 of 10 better
+      (Classical_Music, Neural_Networks, Astronomy, Brazilian_food...), 2
+      worse ("Chess" for 2 football rules + chess; "South_America" for a
+      folder with Paris and Tokyo). A bigger model would likely do better
+      (unmeasured).
+- [x] **Hierarchy** `--depth N`: re-cluster clusters of 20+ files into
+      `Parent/Child`; undo cleans up parents too. Tried on 1,970 real
+      license texts (`/usr/share/doc/*/copyright`, one folder per package):
+      4 min, 1.8 GB peak, 43 s re-run from the cache; 2 top folders with ~10
+      subfolders each (`Gnu_lesser`, `Apache_mit`, `Psf_python`...). It
+      also showed subfolders repeating their parent
+      (`Public_license_general/Public_license_general`): `_folder_name` now
+      skips keywords made only of the parent's words, never falls back to
+      the unfiltered name.
+- [x] **ONNX instead of torch**: `embed.Embedder` (tokenizers +
+      onnxruntime on the repo's `onnx/model.onnx`). Cosine 1.00000 vs
+      sentence-transformers on every demo doc, same ARI (0.899), same speed
+      (39 s vs 39-44 s for 340 texts), peak memory 1.4 GB vs 1.6 GB, deps
+      ~130 MB vs ~900 MB. Batch 32 was 15% faster but peaked at 2.9 GB, so
+      batch 8. The int8 model was 38% faster but 0.987 cosine: rejected.
+      Lost: automatic CUDA (onnxruntime-gpu if ever needed).
+- [ ] **Benchmark against an LLM-per-file sorter** on the demo (ARI, time,
+      RAM, run-to-run stability) — for the README's "why this one" claim.
+
 ## Housekeeping
 
 - [x] **Push the 2 local commits** (`b1369e7`, `21bf3c3` and whatever lands
@@ -209,8 +283,8 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
 
 ## Explicitly not doing (considered, rejected — don't re-propose without new info)
 
-- GUI / desktop app — large scope beyond a CLI organizer; revisit only if
-  asked for.
+- Desktop GUI toolkit (Qt/tkinter) — the UI asked for on 2026-11-19 is the
+  local web page in the roadmap above (stdlib only, works on every OS).
 - Any cloud/API-based keyword extraction or embeddings — violates the
   local-only constraint this project is built on.
 - Duplicate/near-duplicate file detection — no evidence anyone's hit this;

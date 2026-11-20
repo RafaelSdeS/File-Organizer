@@ -1,20 +1,26 @@
+import os
+# Before .embed pulls in huggingface_hub, which reads this at import.
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
 import pandas as pd
 from sklearn.metrics import davies_bouldin_score, silhouette_samples, silhouette_score
 import yake
-from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
-import os
 import shutil
 import json
 import fnmatch
+import hashlib
 import re
+import sqlite3
 import time
+import urllib.request
 from collections import Counter
 from datetime import datetime
 import numpy as np
 import logging
 
-from .utils import create_weighted_text, read_file, read_audio_metadata, set_transcription_language
+from .embed import Embedder
+from .utils import TESSERACT, create_weighted_text, ocr_image, read_file, read_audio_metadata, sensitive_kinds, set_transcription_language
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +30,17 @@ logger = logging.getLogger(__name__)
 # 512 tokens vs 128. At 128 every letterheaded PDF (university header, CNPJ,
 # address) embedded to the same boilerplate and collapsed into one cluster.
 EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
+# Pinned: an upstream update can't silently change the clusters, and a pinned
+# commit loads from the local cache with no network round trip.
+EMBEDDING_REVISION = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
 # e5 wants a task prefix; its model card specifies "query: " for symmetric
 # tasks like clustering.
 EMBEDDING_PREFIX = "query: "
 
 readable_files = [".pdf", ".txt", ".md", ".csv", ".xml", ".rtf", ".docx", ".pptx", ".odt", ".xlsx"]
 audio_files = [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a", ".aiff", ".opus"]
+# Read by OCR when the tesseract binary is installed; by name otherwise.
+image_files = [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"]
 
 # Dropped into every cluster folder organize_files creates, so a later run
 # recognizes and skips its own output instead of re-clustering it.
@@ -41,8 +52,22 @@ HISTORY_PATH = os.path.join(
     os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state"),
     "file-organizer", "history.jsonl",
 )
+# Embeddings of documents already seen, so a re-run (or --into over a big
+# archive) only encodes what changed. Vectors are derived from content, so
+# the file is private to the user and rows unseen for a while are dropped.
+CACHE_PATH = os.path.join(
+    os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"),
+    "file-organizer", "embeddings.sqlite",
+)
+CACHE_MAX_AGE_DAYS = 90
 # Folder for documents too far from every cluster centroid to belong anywhere.
 MISC_FOLDER = "Misc"
+# With --depth 2+, clusters at least this big are split into subfolders.
+# ponytail: fixed; make it a flag if 20 is wrong on real folders.
+SPLIT_MIN = 20
+# --llm-names: a local Ollama server. Loopback only, on purpose: a host
+# option would be a way for the documents' keywords to leave the machine.
+OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 # How much of each document to read. The embedding model only sees ~512
 # tokens (roughly 2000-2500 characters), so the rest of a long PDF was pure
 # cost: on ~2000 files, reading everything took 181 s of a 411 s run.
@@ -156,14 +181,17 @@ def _misc_labels(embeddings, labels, centers, z):
     return labels
 
 
-def _folder_name(keywords):
+def _folder_name(keywords, taken=()):
     """Folder name from the top-2 keywords, minus words they share.
 
     YAKE's top keywords overlap constantly ("engenharia eletrica" +
     "energia eletrica"), which used to produce names like
-    "Engenharia_eletrica_energia_eletrica".
+    "Engenharia_eletrica_energia_eletrica". `taken` words (a parent
+    folder's) are skipped too, and so are keywords made only of them, so a
+    subfolder names what sets it apart from its parent; "" if nothing does.
     """
-    seen, words = set(), []
+    seen, words = set(taken), []
+    keywords = [k for k in keywords if any(w.lower() not in seen for w in k.split())]
     for keyword in keywords[:2]:
         for word in keyword.split():
             if word.lower() not in seen:
@@ -178,15 +206,144 @@ def _is_noise_entry(name, skip_noise, exclude_patterns):
     return any(fnmatch.fnmatch(name, pattern) for pattern in exclude_patterns)
 
 
+def _read_content(full_path):
+    """A file's text for embedding, or None (not a readable type, or failed
+    to read - such a file is still clustered by its name)."""
+    ext = os.path.splitext(full_path)[1].lower()
+    try:
+        if ext in readable_files:
+            return read_file(full_path, max_chars=READ_CHARS)
+        if ext in audio_files:
+            return read_audio_metadata(full_path)
+        if ext in image_files:
+            return ocr_image(full_path)
+    except Exception as e:
+        logger.warning(f"Failed to read {full_path}: {e}")
+    return None
+
+
+def _cache_key(text):
+    # The model revision is part of the key, so a new model never reuses
+    # vectors from the old one.
+    return hashlib.sha256(f"{EMBEDDING_MODEL}@{EMBEDDING_REVISION}\n{text}".encode()).hexdigest()
+
+
+def _open_cache():
+    """The embedding cache, or None if it can't be opened - a cache problem
+    must never fail a run."""
+    try:
+        os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
+        db = sqlite3.connect(CACHE_PATH)
+        os.chmod(CACHE_PATH, 0o600)  # vectors are derived from document content
+        db.execute("CREATE TABLE IF NOT EXISTS docs (key TEXT PRIMARY KEY, vec BLOB, last_seen REAL)")
+        return db
+    except (sqlite3.Error, OSError) as e:
+        logger.warning(f"Embedding cache unavailable ({CACHE_PATH}): {e}")
+        return None
+
+
+def _assign_to_folders(embeddings, archive_embeddings, archive_folders, z):
+    """For --into: per document, the existing folder it fits (or None), and
+    each folder's prototype (the mean of its files' embeddings).
+
+    A document fits its nearest prototype if it is no farther from it than
+    the archive's own files usually are from theirs: mean + z std over all
+    of them, the same rule (and knob) as Misc. z = 0 always takes the
+    nearest folder, as it disables Misc.
+    """
+    names = sorted(set(archive_folders))
+    folder_of = np.array(archive_folders)
+    protos = np.array([archive_embeddings[folder_of == name].mean(axis=0) for name in names])
+    own = np.linalg.norm(archive_embeddings - protos[[names.index(f) for f in archive_folders]], axis=1)
+    # Squared distances via dot products: an n x folders x dim array would
+    # be hundreds of MB on a big folder.
+    sq = (embeddings ** 2).sum(axis=1)[:, None] - 2 * embeddings @ protos.T + (protos ** 2).sum(axis=1)[None, :]
+    nearest = sq.argmin(axis=1)
+    dist = np.sqrt(np.maximum(sq[np.arange(len(embeddings)), nearest], 0))
+    fits = dist <= own.mean() + z * own.std() if z else np.ones(len(embeddings), dtype=bool)
+    return [names[j] if ok else None for j, ok in zip(nearest, fits)], dict(zip(names, protos))
+
+
+def _file_scores(paths, embeddings, folders, centroids=None):
+    """{file: cosine similarity to its folder's centroid}, rounded - a low
+    score is a placement worth checking. `centroids` overrides the mean of
+    a folder's files from this run (for --into, the archive's prototype)."""
+    index = {path: i for i, path in enumerate(paths)}
+    scores = {}
+    for folder, files in folders.items():
+        rows = np.asarray(embeddings[[index[f] for f in files]], dtype=float)
+        centre = (centroids or {}).get(folder)
+        centre = rows.mean(axis=0) if centre is None else np.asarray(centre, dtype=float)
+        centre = centre / max(np.linalg.norm(centre), 1e-12)
+        sims = rows @ centre / np.maximum(np.linalg.norm(rows, axis=1), 1e-12)
+        scores.update(zip(files, np.round(sims, 2).tolist()))
+    return scores
+
+
+def _llm_folder_name(model, keywords, files):
+    """A short folder name from a local Ollama model, or None on any failure
+    (the caller keeps YAKE's name). One call per cluster, not per file."""
+    # Without the examples and the explicit don'ts, a 1.5B model answered
+    # "StockExch", "WorldCup2022" (a made-up year), "Bachmusique".
+    prompt = (
+        "You name folders for a document organizer. Below are the keywords and some file names "
+        "of one folder. Reply with a plain folder name of 1 to 3 common words for their shared "
+        'topic, like "Astronomy", "Brazilian food" or "Football rules": no abbreviations, '
+        "no dates or numbers, no file names, in the language of the keywords. "
+        "Reply with the name only.\n"
+        f"Keywords: {', '.join(keywords)}\n"
+        f"File names: {', '.join(files)}"
+    )
+    request = urllib.request.Request(
+        # temperature 0 + seed: the same folder gets the same name every run
+        # (Ollama's default 0.8 renamed half the demo's folders between runs).
+        OLLAMA_URL, data=json.dumps({"model": model, "prompt": prompt, "stream": False,
+                                     "options": {"temperature": 0, "seed": 0}}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        # No proxies: urllib would otherwise honour http_proxy even for
+        # 127.0.0.1 and hand the keywords to whatever proxy is configured.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=120) as response:
+            reply = json.load(response).get("response", "")
+    except (OSError, ValueError) as e:
+        logger.warning(f"Local LLM naming failed ({e}); keeping the keyword name")
+        return None
+    reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.S).strip()
+    # Hyphens and underscores separate words too, so the 3-word cap holds.
+    words = re.sub(r"[\W_]+", " ", reply.splitlines()[0] if reply else "").split()
+    name = "_".join(words[:3])[:40].strip("_-")
+    # The supported languages are all Latin-script; Qwen drifted into
+    # Chinese mid-name ("Classical音乐") - keep YAKE's name instead.
+    if any(ord(c) > 0x24F for c in name):
+        return None
+    return name[:1].upper() + name[1:] or None
+
+
+def _load_model():
+    """The embedding model, from the local cache without touching the network.
+
+    Without local_files_only, huggingface_hub sends a request to
+    huggingface.co on every load just to check for updates, even with the
+    model cached. Only the very first run (nothing cached yet) downloads.
+    """
+    try:
+        return Embedder(EMBEDDING_MODEL, EMBEDDING_REVISION, local_files_only=True)
+    except OSError:
+        logger.info(f"Downloading the embedding model once (~470 MB) from huggingface.co: {EMBEDDING_MODEL}")
+        return Embedder(EMBEDDING_MODEL, EMBEDDING_REVISION)
+
+
 class DocumentAnalyzer:
 
     #Main class for analyzing and organizing documents using AI-powered clustering.
     #Uses sentence embeddings for content similarity analysis and YAKE for keyword extraction.
 
-    def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, skip_noise=True, exclude_patterns=None, lang="auto", misc_threshold=2.0):
+    def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, skip_noise=True, exclude_patterns=None, lang="auto", misc_threshold=2.0, use_cache=True, depth=1, llm_names=None):
         if max_clusters < 3:
             raise ValueError("max_clusters must be at least 3 (k=2 needs to be a testable candidate)")
-        self.model = SentenceTransformer(EMBEDDING_MODEL)
+        self._model = None  # loaded on first use: a fully cached run never needs it
         # lang picks the stopword lists - with the wrong one, the target
         # language's stopwords ("de", "do", "para", ...) become folder names -
         # and the languages each document is detected among, so embeddings
@@ -207,20 +364,33 @@ class DocumentAnalyzer:
         self.skip_noise = skip_noise
         self.exclude_patterns = exclude_patterns or []
         self.misc_threshold = misc_threshold
+        self.use_cache = use_cache
+        self.depth = depth
+        self.llm_names = llm_names
         # Filled by analyze_directory / _find_optimal_clusters, for --report.
         self.last_run = None
         self.k_scores = None
 
-    def analyze_directory(self, path):
+    @property
+    def model(self):
+        if self._model is None:
+            self._model = _load_model()
+        return self._model
+
+    def analyze_directory(self, path, into=None):
         """
         Analyzes all files in the specified directory and organizes them into clusters.
-        
+
         Args:
             path (str): Path to the directory to analyze
-            
+            into (str): Optional folder of already-organized subfolders. A
+                document that fits one of them is filed there; the rest are
+                clustered into new folders as usual.
+
         Returns:
-            dict: Organized cluster information'
-            
+            dict: {folder name: [file names in path]}; with depth > 1 a
+            folder name can be "Parent/Child".
+
         Raises:
             ValueError: If the path is invalid or directory is empty
             FileNotFoundError: If the specified path does not exist
@@ -229,20 +399,26 @@ class DocumentAnalyzer:
         """
         if not isinstance(path, str) or not path.strip():
             raise ValueError("Invalid directory path provided")
-        
+
         try:
             # Verify directory exists and is accessible
-            if not os.path.exists(path):
-                raise FileNotFoundError(f"Directory not found: {path}")
-            if not os.path.isdir(path):
-                raise ValueError(f"Path is not a directory: {path}")
-            if not os.access(path, os.R_OK):
-                raise PermissionError(f"Permission denied for directory: {path}")
-            
+            for folder in (path, into) if into else (path,):
+                if not os.path.exists(folder):
+                    raise FileNotFoundError(f"Directory not found: {folder}")
+                if not os.path.isdir(folder):
+                    raise ValueError(f"Path is not a directory: {folder}")
+                if not os.access(folder, os.R_OK):
+                    raise PermissionError(f"Permission denied for directory: {folder}")
+
             files_data = []
             # Per-stage timings go to the INFO log, to see where time goes on
             # big folders.
             started = time.perf_counter()
+
+            archive = self._scan_archive(into) if into else []
+            # The --into folders are destinations, not documents: never
+            # cluster them (or `into` itself, if it sits inside `path`).
+            destinations = {os.path.realpath(os.path.join(into, folder)) for folder, _ in archive} | {os.path.realpath(into)} if into else set()
 
             with os.scandir(path) as dir_iter:
                 for entry in dir_iter:
@@ -250,42 +426,12 @@ class DocumentAnalyzer:
                         continue
                     try:
                         if entry.is_file():
-                            _, ext = os.path.splitext(entry.name)
-                            ext = ext.lower()
-                            if ext in readable_files:
-                                try:
-                                    content = read_file(os.path.join(path, entry.name), max_chars=READ_CHARS)
-                                    file_data = {
-                                        "Path": entry.name,
-                                        "Content": content
-                                    }
-                                except Exception as e:
-                                    logger.warning(f"Failed to read file {entry.name}: {str(e)}")
-                                    file_data = {
-                                        "Path": entry.name,
-                                        "Content": None
-                                    }
-                            elif ext in audio_files:
-                                try:
-                                    content = read_audio_metadata(os.path.join(path, entry.name))
-                                    file_data = {
-                                        "Path": entry.name,
-                                        "Content": content
-                                    }
-                                except Exception as e:
-                                    logger.warning(f"Failed to read audio file {entry.name}: {str(e)}")
-                                    file_data = {
-                                        "Path": entry.name,
-                                        "Content": None
-                                    }
-                            else:
-                                file_data = {
-                                    "Path": entry.name,
-                                    "Content": None
-                                }
+                            file_data = {"Path": entry.name, "Content": _read_content(entry.path)}
                         else:
                             if entry.is_symlink():
                                 logger.info(f"Skipping symlinked directory: {entry.name}")
+                                continue
+                            if os.path.realpath(entry.path) in destinations:
                                 continue
                             if os.path.exists(os.path.join(entry.path, ORGANIZED_MARKER)):
                                 logger.info(f"Skipping previously organized folder: {entry.name}")
@@ -314,67 +460,162 @@ class DocumentAnalyzer:
                 axis=1
             )
 
-            # Generate embeddings for clustering
-            logger.info(f"Read {len(files_data)} entries from {path} in {time.perf_counter() - started:.1f}s; generating embeddings...")
-            started = time.perf_counter()
-            try:
-                # normalize_embeddings makes KMeans' Euclidean distance
-                # monotonic in cosine distance, which is the metric these
-                # embeddings are actually trained for.
-                embeddings = self.model.encode(
-                    [EMBEDDING_PREFIX + text for text in df["Text"]],
-                    normalize_embeddings=True,
-                    show_progress_bar=logger.isEnabledFor(logging.INFO),
-                )
-            except Exception as e:
-                raise RuntimeError(f"Failed to generate embeddings: {str(e)}")
+            no_text = sum(1 for d in files_data if d["Path"].lower().endswith(".pdf") and d["Content"] == "")
+            if no_text:
+                logger.info(f"{no_text} PDF(s) have no text layer (scans?), so only their names count"
+                            + ("" if TESSERACT else " - install tesseract to OCR them"))
 
-            languages = _detect_languages(df["Text"], self.stopword_sets)
+            # Generate embeddings for clustering. Archive files (--into) are
+            # embedded and language-centred together with the new ones, so
+            # both live in the same space.
+            texts = df["Text"].tolist() + [text for _, text in archive]
+            logger.info(f"Read {len(texts)} entries in {time.perf_counter() - started:.1f}s; generating embeddings...")
+            started = time.perf_counter()
+            embeddings = self._embed(texts)
+
+            languages = _detect_languages(texts, self.stopword_sets)
             counts = Counter(lang or "none" for lang in languages.tolist())
             logger.info(f"Detected languages: {dict(counts)}")
             embeddings = _center_by_language(embeddings, languages)
             if self.auto_lang:
                 found = [lang for lang in self.stopword_sets if lang in set(languages)]
                 self.kw_extractor = self._keyword_extractor(found or ["en"])
-
+            embeddings, archive_embeddings = embeddings[:len(df)], embeddings[len(df):]
             logger.info(f"Embedded in {time.perf_counter() - started:.1f}s; determining the number of clusters...")
-            started = time.perf_counter()
-            try:
-                optimal_clusters = self._find_optimal_clusters(embeddings, max_k=self.max_clusters)
-            except Exception as e:
-                raise RuntimeError(f"Failed to find optimal clusters: {str(e)}")
-            logger.info(f"Picked k={optimal_clusters} in {time.perf_counter() - started:.1f}s")
-            started = time.perf_counter()
-            
-            # Perform K-means clustering
-            try:
-                kmeans = KMeans(
-                    n_clusters=optimal_clusters,
-                    random_state=42,
-                    n_init=10
-                )
-                labels = kmeans.fit_predict(embeddings)
-            except Exception as e:
-                raise RuntimeError(f"Clustering failed: {str(e)}")
 
-            if self.misc_threshold:
-                labels = _misc_labels(embeddings, labels, kmeans.cluster_centers_, self.misc_threshold)
-            df["Cluster"] = labels
+            folders, centroids = {}, {}
+            fits = [None] * len(df)
+            if archive:
+                fits, centroids = _assign_to_folders(embeddings, archive_embeddings, [f for f, _ in archive], self.misc_threshold)
+                for file, folder in zip(df["Path"], fits):
+                    if folder:
+                        folders.setdefault(folder, []).append(file)
+                logger.info(f"{sum(map(bool, fits))} of {len(df)} entries fit an existing folder in {into}")
+            elif into:
+                logger.warning(f"{into} has no subfolders with files; clustering everything into new folders")
+
+            rest = np.array([folder is None for folder in fits])
+            self.k_scores = None
+            if rest.any():
+                # A couple of strays don't deserve a new folder next to the user's own.
+                labels = np.full(rest.sum(), -1) if archive and rest.sum() < 3 else self._cluster(embeddings[rest])
+                k_scores = self.k_scores  # sub-clustering (depth > 1) overwrites it
+                started = time.perf_counter()
+                new = self._organize_clusters(df[rest].assign(Cluster=labels), embeddings[rest], self.depth)
+                for folder, files in new.items():
+                    folders.setdefault(folder, []).extend(files)
+                self.k_scores = k_scores
+                logger.info(f"Named folders in {time.perf_counter() - started:.1f}s")
+
+            sensitive = {}
+            for file, content in zip(df["Path"], df["Content"]):
+                kinds = sensitive_kinds(content) if content else set()
+                if kinds:
+                    sensitive[file] = sorted(kinds)
+            if sensitive:
+                logger.warning(f"{len(sensitive)} file(s) contain a CPF or card number")
 
             self.last_run = {
                 "paths": df["Path"].tolist(),
                 "embeddings": embeddings,
                 "k_scores": self.k_scores,
+                "scores": _file_scores(df["Path"].tolist(), embeddings, folders, centroids),
+                "sensitive": sensitive,
             }
-
-            folders = self._organize_clusters(df)
-            logger.info(f"Clustered and named folders in {time.perf_counter() - started:.1f}s")
             return folders
-            
+
         except Exception as e:
             logger.error(f"Analysis failed: {str(e)}")
             raise
-    
+
+    def _scan_archive(self, into):
+        """[(folder, text)] for every file under each top-level subfolder of
+        `into` - the folders --into can file new documents into.
+        ponytail: reads every archive file on each run (the cache saves the
+        encoding, not the reading); nested folders aren't targets of their own.
+        """
+        with os.scandir(into) as entries:
+            folders = [e for e in entries if e.is_dir(follow_symlinks=False)
+                       and not _is_noise_entry(e.name, self.skip_noise, self.exclude_patterns)]
+        docs = []
+        for folder in folders:
+            for root, dirs, files in os.walk(folder.path):
+                dirs[:] = [d for d in dirs if not _is_noise_entry(d, self.skip_noise, self.exclude_patterns)]
+                for name in files:
+                    if name == ORGANIZED_MARKER or _is_noise_entry(name, self.skip_noise, self.exclude_patterns):
+                        continue
+                    content = _read_content(os.path.join(root, name))
+                    docs.append((folder.name, create_weighted_text(name, content, path_weight=self.path_weight)))
+        return docs
+
+    def _embed(self, texts):
+        """Normalized embeddings of texts, encoding only those not in the cache.
+
+        Unit length (Embedder.encode always normalizes) makes KMeans'
+        Euclidean distance monotonic in cosine distance, which is the metric
+        these embeddings are trained for.
+        """
+        texts = [EMBEDDING_PREFIX + text for text in texts]
+        keys = [_cache_key(text) for text in texts]
+        db = _open_cache() if self.use_cache else None
+        vectors = {}
+        if db:
+            try:
+                for key in keys:  # ponytail: one query per key; trivial next to encoding
+                    row = db.execute("SELECT vec FROM docs WHERE key = ?", (key,)).fetchone()
+                    if row:
+                        vectors[key] = np.frombuffer(row[0], dtype=np.float32)
+            except sqlite3.Error as e:
+                logger.warning(f"Embedding cache unreadable, ignoring it: {e}")
+                vectors = {}
+
+        missing = [i for i, key in enumerate(keys) if key not in vectors]
+        if vectors:
+            logger.info(f"{len(texts) - len(missing)} of {len(texts)} embeddings from the cache")
+        if missing:
+            try:
+                encoded = self.model.encode(
+                    [texts[i] for i in missing],
+                    show_progress_bar=logger.isEnabledFor(logging.INFO),
+                )
+            except Exception as e:
+                raise RuntimeError(f"Failed to generate embeddings: {str(e)}")
+            for i, vector in zip(missing, encoded):
+                vectors[keys[i]] = np.asarray(vector, dtype=np.float32)
+
+        if db:
+            try:
+                now = time.time()
+                with db:
+                    db.executemany("INSERT OR REPLACE INTO docs VALUES (?, ?, ?)",
+                                   [(key, vectors[key].tobytes(), now) for key in set(keys)])
+                    db.execute("DELETE FROM docs WHERE last_seen < ?", (now - CACHE_MAX_AGE_DAYS * 86400,))
+            except sqlite3.Error as e:
+                logger.warning(f"Could not update the embedding cache: {e}")
+            finally:
+                db.close()
+        return np.array([vectors[key] for key in keys])
+
+    def _cluster(self, embeddings):
+        """Cluster labels for the embeddings: pick k, run KMeans, then send
+        the documents that don't belong anywhere to Misc (label -1)."""
+        started = time.perf_counter()
+        try:
+            k = self._find_optimal_clusters(embeddings, max_k=self.max_clusters)
+        except Exception as e:
+            raise RuntimeError(f"Failed to find optimal clusters: {str(e)}")
+        logger.info(f"Picked k={k} in {time.perf_counter() - started:.1f}s")
+
+        try:
+            kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+            labels = kmeans.fit_predict(embeddings)
+        except Exception as e:
+            raise RuntimeError(f"Clustering failed: {str(e)}")
+
+        if self.misc_threshold:
+            labels = _misc_labels(embeddings, labels, kmeans.cluster_centers_, self.misc_threshold)
+        return labels
+
     def _analyze_folder(self, folder_path):
 
         file_data = {
@@ -391,32 +632,10 @@ class DocumentAnalyzer:
             full_path = entry.path
 
             if entry.is_file():
-                _, ext = os.path.splitext(entry.name)
-                ext = ext.lower()
-
                 # Once the folder has enough text for the embedding, the rest
                 # of its files only contribute their names.
-                if len(file_data["Content"]) >= READ_CHARS:
-                    file_data["Content"] += entry.name
-
-                elif ext in readable_files:
-                    try:
-                        content = read_file(full_path, max_chars=READ_CHARS)
-                        file_data["Content"] += (entry.name + content)
-                    except Exception as e:
-                        logger.warning(f"Failed to read file {full_path}: {str(e)}")
-                        file_data["Content"] += entry.name
-
-                elif ext in audio_files:
-                    try:
-                        content = read_audio_metadata(full_path)
-                        file_data["Content"] += (entry.name + (content or ""))
-                    except Exception as e:
-                        logger.warning(f"Failed to read audio file {full_path}: {str(e)}")
-                        file_data["Content"] += entry.name
-
-                else:
-                    file_data["Content"] += entry.name
+                full = len(file_data["Content"]) >= READ_CHARS
+                file_data["Content"] += entry.name + ((None if full else _read_content(full_path)) or "")
 
             else:
                 if entry.is_symlink():
@@ -491,28 +710,52 @@ class DocumentAnalyzer:
         }
         return k_optimal
     
-    def _organize_clusters(self, df):
-        
-        # Organizes files into clusters based on their content similarity
+    def _organize_clusters(self, df, embeddings=None, depth=1, parent=""):
+        """{folder: [files]} from df's Cluster labels (-1 = Misc).
+
+        With depth > 1 (and the embeddings), a cluster of SPLIT_MIN+ files is
+        clustered again into "Parent/Child" folders; a file the lower level
+        sends to Misc stays in the parent folder itself.
+        """
         folder_structure = {}
-        cluster_keywords = {}
-        
-        for cluster in df["Cluster"].unique():
-            cluster_files = df[df["Cluster"] == cluster]
+        taken = set(re.split(r"[_/]", parent.lower())) if parent else set()
+        labels = df["Cluster"].to_numpy()
+
+        for cluster in pd.unique(labels):
+            mask = labels == cluster
+            cluster_files = df[mask]
+            cluster_embeddings = None if embeddings is None else embeddings[mask]
             if cluster == -1:
                 # Outliers have nothing in common to extract keywords from.
-                cluster_keywords[cluster] = MISC_FOLDER
+                name = parent or MISC_FOLDER
             else:
-                keywords = self._extract_keywords(cluster_files["Text"].tolist())
-                folder_name = _folder_name(keywords)
-                cluster_keywords[cluster] = folder_name if folder_name else f"Cluster_{cluster}"
+                name = self._cluster_name(cluster_files, cluster_embeddings, taken) or f"Cluster_{cluster}"
+                name = f"{parent}/{name}" if parent else name
+                if depth > 1 and cluster_embeddings is not None and mask.sum() >= SPLIT_MIN:
+                    sub = cluster_files.assign(Cluster=self._cluster(cluster_embeddings))
+                    for folder, files in self._organize_clusters(sub, cluster_embeddings, depth - 1, name).items():
+                        folder_structure.setdefault(folder, []).extend(files)
+                    continue
             # Different clusters can extract the same top keywords; merge into
             # the existing folder instead of overwriting it and losing files.
-            folder_structure.setdefault(cluster_keywords[cluster], []).extend(
-                cluster_files["Path"].tolist()
-            )
-            
+            folder_structure.setdefault(name, []).extend(cluster_files["Path"].tolist())
+
         return folder_structure
+
+    def _cluster_name(self, cluster_files, embeddings, taken):
+        """YAKE's name for a cluster, or a local LLM's (--llm-names) given
+        YAKE's keywords and the files nearest the cluster's centre."""
+        keywords = self._extract_keywords(cluster_files["Text"].tolist())
+        # No fallback to the unfiltered name: on 2,000 license texts that
+        # produced "Public_license_general/Public_license_general".
+        name = _folder_name(keywords, taken)
+        if self.llm_names and keywords:
+            files = cluster_files["Path"].tolist()
+            if embeddings is not None:
+                order = np.argsort(-(embeddings @ embeddings.mean(axis=0)))
+                files = [files[i] for i in order]
+            name = _llm_folder_name(self.llm_names, keywords, files[:5]) or name
+        return name
     
     def _keyword_extractor(self, langs):
         return yake.KeywordExtractor(
@@ -525,18 +768,25 @@ class DocumentAnalyzer:
         keywords = self.kw_extractor.extract_keywords(full_text)
         return [kw[0] for kw in keywords]
     
-    def organize_files(self, folder_structure, source_dir, target_dir=None, copy=False):
+    # Static: applying a plan (--apply, the UI) needs no model loaded.
+    @staticmethod
+    def organize_files(folder_structure, source_dir, target_dir=None, copy=False):
             target_dir = target_dir or source_dir
 
             logger.info(f"Creating directories in: {target_dir}")
-            # Create all necessary directories
+            os.makedirs(target_dir, exist_ok=True)
             for folder_name in folder_structure.keys():
-                folder_path = os.path.join(target_dir, folder_name)
-                os.makedirs(folder_path, exist_ok=True)
-                # Marks this as a folder the tool created, so a later run on
-                # the same directory skips it instead of re-clustering it.
-                with open(os.path.join(folder_path, ORGANIZED_MARKER), "w"):
-                    pass
+                # Level by level, for "Parent/Child" folders. Only a folder
+                # created here gets the marker (so a later run on the same
+                # directory skips it): with --into the destinations are the
+                # user's own folders, which a later run must still see.
+                folder_path = target_dir
+                for part in folder_name.split("/"):
+                    folder_path = os.path.join(folder_path, part)
+                    if not os.path.isdir(folder_path):
+                        os.mkdir(folder_path)
+                        with open(os.path.join(folder_path, ORGANIZED_MARKER), "w"):
+                            pass
 
             # Move files to their respective folders
             manifest = []
@@ -588,6 +838,9 @@ class DocumentAnalyzer:
             })
 
             return manifest_path
+
+
+organize_files = DocumentAnalyzer.organize_files
 
 
 def _record_history(entry):
@@ -655,10 +908,14 @@ def undo_organize(manifest_path):
         shutil.move(destination, source)
         logger.info(f"Restored: {destination} -> {source}")
 
+    # Walk up from each destination folder, so a "Parent/Child" tree goes
+    # once its last child does. Stops at the first folder holding anything
+    # else - a folder the tool didn't create has no marker, so it never goes.
     for folder in {os.path.dirname(entry["destination"]) for entry in manifest}:
-        if os.path.isdir(folder) and os.listdir(folder) == [ORGANIZED_MARKER]:
+        while os.path.isdir(folder) and os.listdir(folder) == [ORGANIZED_MARKER]:
             os.remove(os.path.join(folder, ORGANIZED_MARKER))
             os.rmdir(folder)
+            folder = os.path.dirname(folder)
 
     if skipped:
         print(f"Undo finished with {skipped} entr{'y' if skipped == 1 else 'ies'} skipped; manifest kept at {manifest_path}")

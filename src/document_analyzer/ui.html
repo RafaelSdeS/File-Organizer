@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>File Organizer</title>
+<!-- One self-contained file: no external URL anywhere (a test enforces it),
+     and the server's Content-Security-Policy blocks any that sneaks in. -->
+<style>
+  :root {
+    --bg: #f6f5f2; --surface: #ffffff; --ink: #1d1d1b; --ink-2: #55534e; --muted: #8a877f;
+    --line: #e2e0da; --accent: #2a78d6; --accent-soft: #e3ecf8; --warn: #b4540a; --warn-soft: #fbeee2;
+    --danger: #b3261e; --on-accent: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --surface: #1f1f1d; --ink: #ecebe7; --ink-2: #b9b7b0; --muted: #85837c;
+      --line: #34332f; --accent: #6da7ec; --accent-soft: #1d3150; --warn: #f0a35e; --warn-soft: #3a2a1a;
+      --danger: #f2a19b; --on-accent: #0d1b2e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header, main, footer { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.35rem; margin: 8px 0 2px; }
+  .sub { color: var(--ink-2); margin: 0 0 16px; }
+  form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: end; }
+  label { display: grid; gap: 4px; font-size: .85rem; color: var(--ink-2); }
+  input[type=text], select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; min-width: 0; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 7px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #status { min-height: 1.4em; margin: 12px 0 0; color: var(--ink-2); }
+  #status.error { color: var(--danger); }
+  #result { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  .summary { color: var(--ink-2); margin: 0 0 12px; overflow-wrap: anywhere; }
+  .folder { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; }
+  .folder.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .folder-head { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .folder-head input { flex: 1; font-weight: 600; }
+  .count { color: var(--muted); font-size: .85rem; white-space: nowrap; }
+  ul { list-style: none; margin: 0; padding: 4px 10px; }
+  li { display: grid; grid-template-columns: 3.2em minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--line); }
+  li:last-child { border-bottom: 0; }
+  .score { font-variant-numeric: tabular-nums; color: var(--muted); font-size: .85rem; }
+  .name { overflow-wrap: anywhere; }
+  .badge { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-size: .75rem; background: var(--warn-soft); color: var(--warn); }
+  li select { max-width: 14em; }
+  .add { display: flex; gap: 8px; margin: 4px 0 16px; }
+  .add input { flex: 1; }
+  figure { margin: 0; position: sticky; top: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  svg { width: 100%; height: auto; display: block; }
+  .dot { fill: var(--muted); opacity: .55; cursor: pointer; }
+  .dot.on { fill: var(--accent); opacity: 1; }
+  .dot.misc { fill: var(--surface); stroke: var(--muted); stroke-width: .4; opacity: 1; }
+  figcaption { color: var(--ink-2); font-size: .85rem; margin-top: 6px; }
+  footer .bar { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  details { margin-top: 20px; }
+  summary { cursor: pointer; font-weight: 600; }
+  #history li { grid-template-columns: minmax(0, 1fr) auto; }
+  .muted { color: var(--muted); }
+  [hidden] { display: none !important; }
+  @media (max-width: 860px) {
+    form { grid-template-columns: minmax(0, 1fr); }
+    #result { grid-template-columns: minmax(0, 1fr); }
+    figure { position: static; }
+    li { grid-template-columns: 3.2em minmax(0, 1fr); }
+    li select { grid-column: 2; width: 100%; max-width: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>File Organizer</h1>
+  <p class="sub">Groups documents by what they're about. Everything runs on this computer.</p>
+  <form id="form">
+    <label>Folder to organize <input type="text" id="path" required placeholder="~/Downloads" autocomplete="off"></label>
+    <label>Into existing folders (optional) <input type="text" id="into" placeholder="~/Documents" autocomplete="off"></label>
+    <button class="primary" id="analyze">Analyze</button>
+  </form>
+  <p id="status" role="status" aria-live="polite"></p>
+</header>
+
+<main id="result" hidden>
+  <section aria-label="Proposed folders">
+    <p class="summary" id="summary"></p>
+    <div id="folders"></div>
+    <div class="add">
+      <input type="text" id="new-folder" aria-label="New folder name" placeholder="New folder name">
+      <button id="add-folder" type="button">Add folder</button>
+    </div>
+  </section>
+  <figure>
+    <svg id="map" viewBox="0 0 100 100" role="img" aria-label="Map of the documents"></svg>
+    <figcaption>Each dot is a file, placed by content similarity. Pick a folder (or a dot) to highlight it. Hollow dots are in Misc.</figcaption>
+  </figure>
+</main>
+
+<footer>
+  <div class="bar" id="apply-bar" hidden>
+    <label style="display:flex; gap:6px; align-items:center"><input type="checkbox" id="copy"> Copy instead of move</label>
+    <button class="primary" id="apply" type="button">Apply</button>
+  </div>
+  <details id="history-box">
+    <summary>History</summary>
+    <ul id="history"></ul>
+  </details>
+</footer>
+
+<script>
+"use strict";
+const token = location.hash.slice(1);
+const $ = (sel) => document.querySelector(sel);
+const LEAVE = "";            // select value: leave the file where it is
+const MISC = "Misc";
+let plan = null;             // {source, target, folders, scores, sensitive, map}
+let left = [];               // files the user chose not to move
+let selected = null;         // folder highlighted on the map
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: {"X-Token": token, "Content-Type": "application/json"},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function status(text, error = false) {
+  $("#status").textContent = text;
+  $("#status").classList.toggle("error", error);
+}
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else if (key === "class") node.className = value;
+    else node[key] = value;
+  }
+  node.append(...children);
+  return node;
+}
+
+function folderOf(file) {
+  for (const [name, files] of Object.entries(plan.folders)) if (files.includes(file)) return name;
+  return null;
+}
+
+function move(file, to) {
+  for (const files of Object.values(plan.folders)) {
+    const i = files.indexOf(file);
+    if (i >= 0) files.splice(i, 1);
+  }
+  left = left.filter((f) => f !== file);
+  if (to === LEAVE) left.push(file); else plan.folders[to].push(file);
+  render();
+}
+
+function rename(from, to) {
+  to = to.trim();
+  if (!to || to === from) return render();
+  const merged = (plan.folders[to] || []).concat(plan.folders[from]);
+  const renamed = {};
+  for (const [name, files] of Object.entries(plan.folders)) {
+    if (name === to) continue;
+    renamed[name === from ? to : name] = name === from ? merged : files;
+  }
+  plan.folders = renamed;
+  if (selected === from) selected = to;
+  render();
+}
+
+function fileRow(file, current) {
+  const score = plan.scores[file];
+  const select = el("select", {"ariaLabel": `Folder for ${file}`, onchange: (e) => move(file, e.target.value)});
+  for (const name of Object.keys(plan.folders)) select.append(el("option", {value: name, textContent: name, selected: name === current}));
+  select.append(el("option", {value: LEAVE, textContent: "(leave where it is)", selected: current === null}));
+  const name = el("span", {class: "name", textContent: file});
+  if (plan.sensitive[file]) name.append(el("span", {class: "badge", textContent: plan.sensitive[file].join(", ").toUpperCase(), title: "Contains personal data"}));
+  return el("li", {},
+    el("span", {class: "score", textContent: score === undefined ? "" : score.toFixed(2), title: "Similarity to its folder (lowest first)"}),
+    name, select);
+}
+
+function render() {
+  const box = $("#folders");
+  box.replaceChildren();
+  const byScore = (a, b) => (plan.scores[a] ?? 1) - (plan.scores[b] ?? 1);
+  for (const [name, files] of Object.entries(plan.folders)) {
+    const input = el("input", {type: "text", value: name, "ariaLabel": "Folder name", onchange: (e) => rename(name, e.target.value)});
+    const show = el("button", {type: "button", textContent: name === selected ? "Hide" : "Show", "ariaPressed": String(name === selected),
+      onclick: () => { selected = name === selected ? null : name; render(); }});
+    box.append(el("section", {class: "folder" + (name === selected ? " selected" : "")},
+      el("div", {class: "folder-head"}, input, el("span", {class: "count", textContent: `${files.length} file${files.length === 1 ? "" : "s"}`}), show),
+      el("ul", {}, ...[...files].sort(byScore).map((f) => fileRow(f, name)))));
+  }
+  if (left.length) {
+    box.append(el("section", {class: "folder"},
+      el("div", {class: "folder-head"}, el("strong", {textContent: "Left where they are"}), el("span", {class: "count", textContent: String(left.length)})),
+      el("ul", {}, ...left.map((f) => fileRow(f, null)))));
+  }
+  const moved = Object.values(plan.folders).reduce((n, files) => n + files.length, 0);
+  const used = Object.values(plan.folders).filter((files) => files.length).length;
+  $("#summary").textContent = `${moved} files into ${used} folders in ${plan.target}`;
+  drawMap();
+}
+
+function drawMap() {
+  const svg = $("#map");
+  svg.replaceChildren();
+  for (const point of plan.map) {
+    const folder = folderOf(point.file);
+    const dot = document.createElementNS(svg.namespaceURI, "circle");
+    dot.setAttribute("cx", 4 + point.x * 92);
+    dot.setAttribute("cy", 4 + (1 - point.y) * 92);
+    dot.setAttribute("r", 1.5);
+    dot.setAttribute("class", "dot" + (folder === MISC ? " misc" : "") + (folder && folder === selected ? " on" : ""));
+    const title = document.createElementNS(svg.namespaceURI, "title");
+    title.textContent = `${point.file} → ${folder ?? "(left where it is)"}`;
+    dot.append(title);
+    dot.addEventListener("click", () => { selected = folder; render(); });
+    svg.append(dot);
+  }
+  svg.closest("figure").hidden = plan.map.length === 0;
+}
+
+async function analyze() {
+  const button = $("#analyze");
+  button.disabled = true;
+  $("#result").setAttribute("aria-busy", "true");
+  status("Analyzing… the first run on a big folder can take a few minutes.");
+  try {
+    plan = await api("/api/analyze", {path: $("#path").value, into: $("#into").value});
+    left = [];
+    selected = Object.keys(plan.folders)[0] ?? null;  // so the map shows something at once
+    $("#result").hidden = false;
+    $("#apply-bar").hidden = false;
+    $("#apply").disabled = false;
+    render();
+    status("Review the folders: rename them, move files with the menus (doubtful files come first), then Apply.");
+  } catch (e) {
+    status(e.message, true);
+  } finally {
+    button.disabled = false;
+    $("#result").removeAttribute("aria-busy");
+  }
+}
+
+async function apply() {
+  const copy = $("#copy").checked;
+  const folders = Object.fromEntries(Object.entries(plan.folders).filter(([, files]) => files.length));
+  const count = Object.values(folders).reduce((n, files) => n + files.length, 0);
+  if (!confirm(`${copy ? "Copy" : "Move"} ${count} files into ${Object.keys(folders).length} folders in ${plan.target}?`)) return;
+  $("#apply").disabled = true;
+  try {
+    const result = await api("/api/apply", {folders, copy});
+    status(result.manifest ? "Done. You can undo it from History below." : "Nothing was moved.");
+    loadHistory();
+  } catch (e) {
+    $("#apply").disabled = false;
+    status(e.message, true);
+  }
+}
+
+async function loadHistory() {
+  const list = $("#history");
+  list.replaceChildren();
+  try {
+    const entries = await api("/api/history");
+    if (!entries.length) list.append(el("li", {class: "muted", textContent: "No runs yet."}));
+    for (const entry of entries) {
+      const where = entry.source_dir === entry.target_dir ? entry.source_dir : `${entry.source_dir} → ${entry.target_dir}`;
+      const text = el("span", {class: "name", textContent: `${entry.time} · ${entry.files} files ${entry.copy ? "copied" : "moved"} · ${where}`});
+      const action = entry.undone ? el("span", {class: "muted", textContent: "undone"})
+        : el("button", {type: "button", textContent: "Undo", onclick: () => undo(entry.manifest)});
+      list.append(el("li", {}, text, action));
+    }
+  } catch (e) {
+    list.append(el("li", {class: "muted", textContent: e.message}));
+  }
+}
+
+async function undo(manifest) {
+  if (!confirm("Put these files back where they were?")) return;
+  try {
+    const result = await api("/api/undo", {manifest});
+    status(result.complete ? "Undone." : "Partly undone: some files were skipped (see the terminal).");
+  } catch (e) {
+    status(e.message, true);
+  }
+  loadHistory();
+}
+
+$("#form").addEventListener("submit", (e) => { e.preventDefault(); analyze(); });
+$("#apply").addEventListener("click", apply);
+$("#add-folder").addEventListener("click", () => {
+  const name = $("#new-folder").value.trim();
+  if (!name || !plan || plan.folders[name]) return;
+  plan.folders[name] = [];
+  $("#new-folder").value = "";
+  render();
+});
+$("#history-box").addEventListener("toggle", (e) => { if (e.target.open) loadHistory(); });
+
+(async () => {
+  if (!token) return status("Open this page with the link the terminal printed (it carries an access token).", true);
+  try {
+    const defaults = await api("/api/defaults");
+    $("#path").value = defaults.path;
+    $("#into").value = defaults.into;
+    $("#copy").checked = defaults.copy;
+    if (defaults.path) analyze();
+  } catch (e) {
+    status(e.message, true);
+  }
+})();
+</script>
+</body>
+</html>

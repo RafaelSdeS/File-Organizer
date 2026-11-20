@@ -100,16 +100,23 @@ def _declutter(fig, labels, step=5, tries=15):
         placed.append(label.get_window_extent(renderer))
 
 
-def _document_map(plt, paths, embeddings, folder_of, folders, out_dir):
+def tsne_xy(embeddings):
+    """2-D map coordinates in [0, 1] (needs 3+ documents); also used by --ui.
+
+    t-SNE keeps each file's nearest neighbours near it, which is the question
+    here ("did similar files land together?"). Fixed seed, so the same run
+    always draws the same map.
+    """
     from sklearn.manifold import TSNE
 
-    # t-SNE keeps each file's nearest neighbours near it, which is the
-    # question here ("did similar files land together?"). Fixed seed, so the
-    # same run always draws the same map.
-    n = len(paths)
+    n = len(embeddings)
     xy = TSNE(n_components=2, metric="cosine", init="pca", random_state=0,
               perplexity=max(2, min(30, (n - 1) // 3))).fit_transform(embeddings)
-    xy = (xy - xy.min(axis=0)) / np.ptp(xy, axis=0).clip(1e-9)
+    return (xy - xy.min(axis=0)) / np.ptp(xy, axis=0).clip(1e-9)
+
+
+def _document_map(plt, paths, embeddings, folder_of, folders, out_dir):
+    xy = tsne_xy(embeddings)
 
     fig, ax = plt.subplots(figsize=(9, 7.2))
     folder_labels, misc_labels = [], []

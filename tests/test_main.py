@@ -13,6 +13,9 @@ from unittest.mock import patch
 
 from src.document_analyzer import main as main_module
 
+# Analyzer knobs the tests below don't set: --no-cache, --depth, --llm-names.
+NEW_KNOB_DEFAULTS = {"use_cache": True, "depth": 1, "llm_names": None}
+
 
 class TestMainCLI(unittest.TestCase):
     def setUp(self):
@@ -86,28 +89,28 @@ class TestMainCLI(unittest.TestCase):
         ])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=3, max_clusters=6, yake_ngram=1, yake_top=3,
-            skip_noise=True, exclude_patterns=[], lang="auto", misc_threshold=2.0
+            skip_noise=True, exclude_patterns=[], lang="auto", misc_threshold=2.0, **NEW_KNOB_DEFAULTS
         )
 
     def test_include_all_disables_skip_noise(self):
         self._run(["some/dir", "-y", "--include-all"])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
-            skip_noise=False, exclude_patterns=[], lang="auto", misc_threshold=2.0
+            skip_noise=False, exclude_patterns=[], lang="auto", misc_threshold=2.0, **NEW_KNOB_DEFAULTS
         )
 
     def test_exclude_patterns_passed_to_analyzer(self):
         self._run(["some/dir", "-y", "--exclude", "*.log", "--exclude", "tmp_*"])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
-            skip_noise=True, exclude_patterns=["*.log", "tmp_*"], lang="auto", misc_threshold=2.0
+            skip_noise=True, exclude_patterns=["*.log", "tmp_*"], lang="auto", misc_threshold=2.0, **NEW_KNOB_DEFAULTS
         )
 
     def test_lang_passed_to_analyzer(self):
         self._run(["some/dir", "-y", "--lang", "pt"])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
-            skip_noise=True, exclude_patterns=[], lang="pt", misc_threshold=2.0
+            skip_noise=True, exclude_patterns=[], lang="pt", misc_threshold=2.0, **NEW_KNOB_DEFAULTS
         )
 
     def test_misc_threshold_passed_to_analyzer(self):
@@ -155,7 +158,7 @@ class TestMainCLI(unittest.TestCase):
         self._run(["some/dir", "-y"])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=7, max_clusters=4, yake_ngram=2, yake_top=5,
-            skip_noise=True, exclude_patterns=[], lang="auto", misc_threshold=2.0
+            skip_noise=True, exclude_patterns=[], lang="auto", misc_threshold=2.0, **NEW_KNOB_DEFAULTS
         )
 
     def test_cli_flag_overrides_config_file(self):
@@ -163,7 +166,7 @@ class TestMainCLI(unittest.TestCase):
         self._run(["some/dir", "-y", "--path-weight", "9"])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=9, max_clusters=10, yake_ngram=2, yake_top=5,
-            skip_noise=True, exclude_patterns=[], lang="auto", misc_threshold=2.0
+            skip_noise=True, exclude_patterns=[], lang="auto", misc_threshold=2.0, **NEW_KNOB_DEFAULTS
         )
 
     def test_missing_config_file_uses_hardcoded_defaults(self):
@@ -172,7 +175,7 @@ class TestMainCLI(unittest.TestCase):
         self._run(["some/dir", "-y"])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
-            skip_noise=True, exclude_patterns=[], lang="auto", misc_threshold=2.0
+            skip_noise=True, exclude_patterns=[], lang="auto", misc_threshold=2.0, **NEW_KNOB_DEFAULTS
         )
 
     def test_malformed_config_file_warns_and_falls_back(self):
@@ -180,7 +183,7 @@ class TestMainCLI(unittest.TestCase):
         self._run(["some/dir", "-y"])
         self.mock_analyzer_cls.assert_called_once_with(
             path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5,
-            skip_noise=True, exclude_patterns=[], lang="auto", misc_threshold=2.0
+            skip_noise=True, exclude_patterns=[], lang="auto", misc_threshold=2.0, **NEW_KNOB_DEFAULTS
         )
 
     def test_history_lists_runs_without_loading_the_model(self):
@@ -216,6 +219,45 @@ class TestMainCLI(unittest.TestCase):
         self._run(["some/dir", "--max-clusters", "2", "-y"])
         self.mock_analyzer.analyze_directory.assert_not_called()
         self.mock_analyzer.organize_files.assert_not_called()
+
+    def test_plan_writes_a_plan_and_moves_nothing(self):
+        self.mock_analyzer.last_run = {"scores": {"a.txt": 0.5}, "sensitive": {}}
+        plan = os.path.join(self.tmp_dir.name, "plan.txt")
+        with patch('builtins.print'):
+            self._run(["some/dir", "--plan", plan])
+        with open(plan, encoding="utf-8") as f:
+            self.assertIn("[Cluster_one]\n0.50\ta.txt", f.read())
+        self.mock_analyzer.organize_files.assert_not_called()
+
+    def test_apply_moves_files_as_the_plan_says_without_loading_the_model(self):
+        source = Path(self.tmp_dir.name) / "src"
+        source.mkdir()
+        (source / "a.txt").write_text("x")
+        plan = Path(self.tmp_dir.name) / "plan.txt"
+        plan.write_text(f"# organize-files plan\tsource={source}\ttarget={source}\n[Renamed by hand]\na.txt\n", encoding="utf-8")
+        with patch('src.document_analyzer.analyzer.HISTORY_PATH', str(Path(self.tmp_dir.name) / "history.jsonl")), \
+             patch('builtins.print'):
+            self._run(["--apply", str(plan), "-y"])
+        self.assertTrue((source / "Renamed by hand" / "a.txt").exists())
+        self.mock_analyzer_cls.assert_not_called()
+
+    def test_apply_refuses_an_unsafe_plan(self):
+        plan = Path(self.tmp_dir.name) / "plan.txt"
+        plan.write_text(f"# organize-files plan\tsource={self.tmp_dir.name}\n[../outside]\nplan.txt\n", encoding="utf-8")
+        with patch('builtins.print'), patch('src.document_analyzer.main.organize_files') as organize:
+            with patch('sys.argv', ["main.py", "--apply", str(plan), "-y"]):
+                self.assertEqual(main_module.main(), 1)
+        organize.assert_not_called()
+
+    def test_into_analyzes_against_and_moves_into_existing_folders(self):
+        self._run(["some/dir", "-y", "--into", "archive"])
+        self.mock_analyzer.analyze_directory.assert_called_once_with("some/dir", into="archive")
+        self.mock_analyzer.organize_files.assert_called_once_with({"Cluster_one": ["a.txt"]}, "some/dir", "archive", copy=False)
+
+    def test_new_knobs_reach_the_analyzer(self):
+        self._run(["some/dir", "-y", "--no-cache", "--depth", "2", "--llm-names", "qwen2.5:1.5b"])
+        kwargs = self.mock_analyzer_cls.call_args.kwargs
+        self.assertEqual((kwargs["use_cache"], kwargs["depth"], kwargs["llm_names"]), (False, 2, "qwen2.5:1.5b"))
 
 
 if __name__ == '__main__':

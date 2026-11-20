@@ -2,9 +2,13 @@ from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 import pandas as pd
 import fnmatch
+import functools
 import logging
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import chardet
 import zipfile
 import xml.etree.ElementTree as ET
@@ -32,6 +36,97 @@ logger = logging.getLogger(__name__)
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 audio_extensions = [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a", ".aiff", ".opus"]
+
+# OCR for scanned PDFs and images, through the tesseract binary (like ffmpeg
+# for audio: no Python dependency, and everything degrades to None without it).
+TESSERACT = shutil.which("tesseract")
+TESSERACT_LANGS = {"en": "eng", "pt": "por", "es": "spa", "fr": "fra", "de": "deu", "it": "ita", "nl": "nld"}
+# Less than this from an image is noise (a photo, a logo), not a document.
+OCR_MIN_CHARS = 20
+
+
+@functools.lru_cache(maxsize=None)
+def _ocr_langs():
+    """'eng+por'-style list of the installed Tesseract languages among
+    TESSERACT_LANGS (the ones --lang auto detects)."""
+    listing = subprocess.run([TESSERACT, "--list-langs"], capture_output=True, text=True).stdout
+    installed = set(listing.split())
+    return "+".join(code for code in TESSERACT_LANGS.values() if code in installed) or "eng"
+
+
+def ocr_image(path):
+    """Text tesseract reads in an image, or None (no tesseract, or too little
+    text for it to be a document)."""
+    if not TESSERACT:
+        return None
+    result = subprocess.run([TESSERACT, path, "stdout", "-l", _ocr_langs()],
+                            capture_output=True, encoding="utf-8", errors="replace", timeout=300)
+    text = result.stdout.strip()
+    return text if len(text) >= OCR_MIN_CHARS else None
+
+
+def _ocr_pdf(reader, max_chars=None):
+    """OCR of a PDF's page images, page by page until max_chars - for scans,
+    which have no text layer. "" on any failure (e.g. an image format pypdf
+    needs Pillow to decode): the file is then clustered by its name."""
+    if not TESSERACT:
+        return ""
+    text = ""
+    try:
+        for page in reader.pages:
+            for image in page.images:
+                fd, tmp = tempfile.mkstemp(suffix=os.path.splitext(image.name)[1] or ".png")
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(image.data)
+                    text += (ocr_image(tmp) or "") + "\n"
+                finally:
+                    os.remove(tmp)
+            if max_chars and len(text) >= max_chars:
+                break
+    except Exception as e:
+        logger.debug(f"OCR of PDF page images failed: {e}")
+    return text.strip()
+
+
+_CPF = re.compile(r"(?<!\d)(\d{3})\.?(\d{3})\.?(\d{3})-?(\d{2})(?!\d)")
+_CARD = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
+
+
+def _cpf_valid(digits):
+    if len(set(digits)) == 1:  # 000.000.000-00 etc. pass the checksum
+        return False
+    for n in (9, 10):
+        total = sum(int(d) * weight for d, weight in zip(digits[:n], range(n + 1, 1, -1)))
+        if total * 10 % 11 % 10 != int(digits[n]):
+            return False
+    return True
+
+
+def _luhn_valid(digits):
+    total = 0
+    for i, d in enumerate(map(int, reversed(digits))):
+        if i % 2:
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+    return total % 10 == 0
+
+
+def sensitive_kinds(text):
+    """Personal data found in text: "cpf" (a Brazilian taxpayer number with
+    valid check digits) and/or "card" (13-19 digits starting 2-6, the card
+    networks' range, passing Luhn - which also skips ISBNs, starting 9).
+    ponytail: ~1 in 10 random digit runs pass Luhn and ~1 in 100 pass the CPF
+    check, so this flags for a human to look, it never acts on its own."""
+    kinds = set()
+    if any(_cpf_valid("".join(m.groups())) for m in _CPF.finditer(text)):
+        kinds.add("cpf")
+    for m in _CARD.finditer(text):
+        digits = re.sub(r"\D", "", m.group())
+        if digits[0] in "23456" and _luhn_valid(digits):
+            kinds.add("card")
+            break
+    return kinds
 
 # Office formats are zips of XML parts: (member glob, tags holding the text).
 # pptx has one part per slide (slide1.xml, slide2.xml, ...).
@@ -140,6 +235,8 @@ def read_file(file_path, max_chars=None):
                             text += page_text
                         if max_chars and len(text) >= max_chars:
                             break
+                    if not text:
+                        text = _ocr_pdf(reader, max_chars)
                     if not text:
                         logger.info(f"No text found in PDF file: {file_path}")
                         return ""

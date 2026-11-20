@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
-from src.document_analyzer.analyzer import DocumentAnalyzer, read_history, undo_organize, _center_by_language, _detect_languages, _elbow_k, _folder_name, _misc_labels, _stopwords, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES, MISC_FOLDER, AUTO_LANGS
+import io
+import json
+from src.document_analyzer.analyzer import DocumentAnalyzer, read_history, undo_organize, _center_by_language, _detect_languages, _elbow_k, _file_scores, _folder_name, _llm_folder_name, _load_model, _misc_labels, _read_content, _stopwords, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES, MISC_FOLDER, AUTO_LANGS, EMBEDDING_MODEL, EMBEDDING_REVISION
 from src.document_analyzer.utils import read_file, create_weighted_text
 
 class TestDocumentAnalyzer(unittest.TestCase):
@@ -23,7 +25,7 @@ class TestDocumentAnalyzer(unittest.TestCase):
         # Patch where the names are looked up (analyzer.py imports them at
         # module scope), and start the patches before DocumentAnalyzer() runs
         # so every test gets the mocks instead of the real, slow-to-load model.
-        model_patcher = patch('src.document_analyzer.analyzer.SentenceTransformer')
+        model_patcher = patch('src.document_analyzer.analyzer.Embedder')
         kw_patcher = patch('src.document_analyzer.analyzer.yake.KeywordExtractor')
         mock_model_cls = model_patcher.start()
         mock_kw_cls = kw_patcher.start()
@@ -37,6 +39,11 @@ class TestDocumentAnalyzer(unittest.TestCase):
         history_patcher = patch('src.document_analyzer.analyzer.HISTORY_PATH', self.history_path)
         history_patcher.start()
         self.addCleanup(history_patcher.stop)
+        # Nor read or write the real embedding cache (a hit would also skip
+        # the encode() calls these tests inspect).
+        cache_patcher = patch('src.document_analyzer.analyzer.CACHE_PATH', os.path.join(history_dir.name, "cache.sqlite"))
+        cache_patcher.start()
+        self.addCleanup(cache_patcher.stop)
 
         self.analyzer = DocumentAnalyzer()
         self.mock_model = mock_model_cls.return_value
@@ -55,6 +62,18 @@ class TestDocumentAnalyzer(unittest.TestCase):
         analyzer = DocumentAnalyzer(lang="pt, en")
         self.assertFalse(analyzer.auto_lang)
         self.assertEqual(list(analyzer.stopword_sets), ["pt", "en"])
+
+    def test_model_loads_from_local_cache(self):
+        """A cached model loads with local_files_only: no request to the Hub."""
+        with patch('src.document_analyzer.analyzer.Embedder') as model_cls:
+            _load_model()
+        model_cls.assert_called_once_with(EMBEDDING_MODEL, EMBEDDING_REVISION, local_files_only=True)
+
+    def test_model_downloads_only_when_not_cached(self):
+        with patch('src.document_analyzer.analyzer.Embedder') as model_cls:
+            model_cls.side_effect = [OSError("not in the local cache"), MagicMock()]
+            _load_model()
+        self.assertEqual(model_cls.call_args_list[1], ((EMBEDDING_MODEL, EMBEDDING_REVISION),))
 
     def test_init_rejects_low_max_clusters(self):
         """max_clusters < 3 leaves no candidate k for _find_optimal_clusters to test."""
@@ -613,6 +632,152 @@ class TestDocumentAnalyzer(unittest.TestCase):
             self.assertTrue((source_dir / "Cluster_one" / "a.txt").exists())
         finally:
             shutil.rmtree(source_dir, ignore_errors=True)
+
+class TestRoadmapFeatures(unittest.TestCase):
+    """Cache, --into, scores, hierarchy, local-LLM names, OCR and sensitive
+    flags, with TestDocumentAnalyzer's setUp (mocked model, temp cache and
+    history)."""
+
+    def setUp(self):
+        TestDocumentAnalyzer.setUp(self)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def _encode_by_name(self, vectors):
+        """encode() side effect: each text gets the vector of the first key
+        (longest first) found in it."""
+        keys = sorted(vectors, key=len, reverse=True)
+        def encode(texts, **kwargs):
+            return np.array([next(vectors[k] for k in keys if k in t) for t in texts], dtype=float)
+        self.mock_model.encode.side_effect = encode
+
+    def _files(self, folder, *names):
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (folder / name).write_text("")
+        return folder
+
+    def test_second_run_reads_embeddings_from_cache(self):
+        src = self._files(self.root / "src", "a.txt", "b.txt", "c.txt")
+        self.mock_model.encode.return_value = np.eye(3)
+        self.mock_kw_extractor.extract_keywords.return_value = [("topic", 0.5)]
+        first = self.analyzer.analyze_directory(str(src))
+        second = self.analyzer.analyze_directory(str(src))
+        self.mock_model.encode.assert_called_once()
+        self.assertEqual(first, second)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions")
+    def test_cache_file_is_private(self):
+        from src.document_analyzer import analyzer as analyzer_module
+        db = analyzer_module._open_cache()
+        db.close()
+        self.assertEqual(os.stat(analyzer_module.CACHE_PATH).st_mode & 0o777, 0o600)
+
+    def test_into_files_documents_into_existing_folders(self):
+        archive = self.root / "archive"
+        self._files(archive / "Alpha", "a1.txt", "a2.txt")
+        self._files(archive / "Beta", "b1.txt", "b2.txt")
+        src = self._files(self.root / "src", "new_alpha.txt", "zeta.txt")
+        self._encode_by_name({"a1": [1, 0.1], "a2": [1, -0.1], "b1": [0.1, 1], "b2": [-0.1, 1],
+                              "new alpha": [1, 0.05], "zeta": [-1, -1]})
+
+        folders = self.analyzer.analyze_directory(str(src), into=str(archive))
+
+        # Close to Alpha's files -> Alpha. Far from everything, and too
+        # few strays for a new folder -> Misc.
+        self.assertEqual(folders, {"Alpha": ["new_alpha.txt"], MISC_FOLDER: ["zeta.txt"]})
+        self.assertEqual(self.analyzer.last_run["scores"]["new_alpha.txt"], 1.0)  # scored against Alpha's prototype
+
+        self.analyzer.organize_files(folders, str(src), str(archive))
+        self.assertTrue((archive / "Alpha" / "new_alpha.txt").exists())
+        # The user's folder must not be marked as the tool's (a later run
+        # would skip it); the folder the tool created is.
+        self.assertFalse((archive / "Alpha" / ORGANIZED_MARKER).exists())
+        self.assertTrue((archive / MISC_FOLDER / ORGANIZED_MARKER).exists())
+
+    def test_into_never_treats_its_own_folders_as_documents(self):
+        """`organize-files ~/Docs --into ~/Docs`: sort the loose files into
+        the subfolders next to them, without clustering those subfolders."""
+        root = self._files(self.root / "docs", "new_alpha.txt")
+        self._files(root / "Alpha", "a1.txt", "a2.txt")
+        self._encode_by_name({"a1": [1, 0.1], "a2": [1, -0.1], "new alpha": [1, 0.0]})
+        self.assertEqual(self.analyzer.analyze_directory(str(root), into=str(root)), {"Alpha": ["new_alpha.txt"]})
+
+    def test_file_scores_are_cosine_to_folder_centroid(self):
+        emb = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]])
+        scores = _file_scores(["a", "b", "c"], emb, {"X": ["a", "b"], "Y": ["c"]})
+        self.assertEqual(scores, {"a": 0.71, "b": 0.71, "c": 1.0})
+
+    def test_depth_two_splits_big_clusters_into_subfolders(self):
+        files = [f"f{i:02d}.txt" for i in range(22)]
+        df = pd.DataFrame({"Path": files, "Content": [""] * 22, "Text": files, "Cluster": [0] * 20 + [1] * 2})
+        sub_labels = np.array([0] * 10 + [1] * 9 + [-1])
+        self.mock_kw_extractor.extract_keywords.side_effect = [
+            [("space", 0.1)], [("space planets", 0.1)], [("stars", 0.1)], [("other", 0.1)],
+        ]
+        with patch.object(self.analyzer, "_cluster", return_value=sub_labels):
+            result = self.analyzer._organize_clusters(df, np.zeros((22, 2)), depth=2)
+
+        self.assertEqual({k: len(v) for k, v in result.items()},
+                         {"Space/Planets": 10, "Space/Stars": 9, "Space": 1, "Other": 2})
+
+    def test_subfolder_never_repeats_its_parent_name(self):
+        # The top keywords only repeat the parent's words: use the next one...
+        self.assertEqual(_folder_name(["public license", "license general", "gnu tools"], {"public", "license", "general"}), "Gnu_tools")
+        # ...and if every keyword does, no name (the caller uses Cluster_<n>).
+        self.assertEqual(_folder_name(["public license", "license"], {"public", "license"}), "")
+
+    def test_undo_removes_nested_folders(self):
+        src = self._files(self.root / "src", "a.txt", "b.txt")
+        manifest = self.analyzer.organize_files({"Space/Planets": ["a.txt"], "Space": ["b.txt"]}, str(src))
+        self.assertTrue((src / "Space" / "Planets" / "a.txt").exists())
+        undo_organize(manifest)
+        self.assertEqual(sorted(os.listdir(src)), ["a.txt", "b.txt"])
+
+    def test_llm_names_a_cluster_through_local_ollama_without_proxies(self):
+        reply = io.BytesIO(json.dumps({"response": "<think>hmm</think>\n\"Astronomia e espaço\"\n"}).encode())
+        with patch("src.document_analyzer.analyzer.urllib.request.build_opener") as build_opener:
+            build_opener.return_value.open.return_value = reply
+            name = _llm_folder_name("qwen2.5:1.5b", ["sistema solar", "planetas"], ["lua.txt"])
+        self.assertEqual(name, "Astronomia_e_espaço")
+        handler = build_opener.call_args.args[0]
+        self.assertEqual(handler.proxies, {})  # never via a configured proxy
+        request = build_opener.return_value.open.call_args.args[0]
+        self.assertEqual(request.full_url, "http://127.0.0.1:11434/api/generate")
+        self.assertEqual(json.loads(request.data)["options"]["temperature"], 0)  # same name every run
+
+    def test_llm_name_cleanup(self):
+        def name_for(reply):
+            with patch("src.document_analyzer.analyzer.urllib.request.build_opener") as build_opener:
+                build_opener.return_value.open.return_value = io.BytesIO(json.dumps({"response": reply}).encode())
+                return _llm_folder_name("m", ["k"], ["f"])
+        self.assertEqual(name_for("Virus-schedule-influenza-vaccination"), "Virus_schedule_influenza")  # 3 words max
+        self.assertIsNone(name_for("Classical音乐"))  # drifted out of the Latin script: keep YAKE's
+        self.assertIsNone(name_for("  "))
+
+    def test_llm_failure_keeps_keyword_name(self):
+        self.analyzer.llm_names = "some-model"
+        self.mock_kw_extractor.extract_keywords.return_value = [("solar system", 0.1)]
+        df = pd.DataFrame({"Path": ["a", "b"], "Content": ["", ""], "Text": ["a", "b"], "Cluster": [0, 0]})
+        with patch("src.document_analyzer.analyzer.urllib.request.build_opener") as build_opener:
+            build_opener.return_value.open.side_effect = OSError("connection refused")
+            self.assertEqual(self.analyzer._organize_clusters(df), {"Solar_system": ["a", "b"]})
+
+    def test_images_are_read_by_ocr(self):
+        src = self._files(self.root / "src", "scan.png")
+        with patch("src.document_analyzer.analyzer.ocr_image", return_value="nota fiscal") as ocr:
+            self.assertEqual(_read_content(str(src / "scan.png")), "nota fiscal")
+        ocr.assert_called_once()
+
+    def test_sensitive_files_are_flagged(self):
+        src = self._files(self.root / "src", "plain.txt", "other.txt")
+        (src / "id.txt").write_text("CPF 529.982.247-25")
+        self.mock_model.encode.return_value = np.eye(3)
+        self.mock_kw_extractor.extract_keywords.return_value = [("topic", 0.5)]
+        self.analyzer.analyze_directory(str(src))
+        self.assertEqual(self.analyzer.last_run["sensitive"], {"id.txt": ["cpf"]})
+
 
 class TestLanguageCentering(unittest.TestCase):
     STOPWORDS = {"pt": {"de", "o", "a", "que"}, "en": {"the", "of", "and", "is"}}

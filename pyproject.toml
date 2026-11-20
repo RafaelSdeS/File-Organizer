@@ -13,7 +13,9 @@ dependencies = [
     "pandas==3.0.5",
     "scikit-learn==1.9.0",
     "yake==0.7.3",
-    "sentence-transformers==5.7.0",
+    "onnxruntime==1.32.0",
+    "tokenizers==0.23.3",
+    "huggingface_hub==2.4.0",
     "numpy==2.5.1",
     "pypdf==7.1.1",
     "chardet==7.5.1",
@@ -28,3 +30,6 @@ organize-files = "document_analyzer.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+document_analyzer = ["ui.html"]

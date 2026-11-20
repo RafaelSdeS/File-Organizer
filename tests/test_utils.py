@@ -245,5 +245,58 @@ class TestTranscriptionLanguage(unittest.TestCase):
         self.assertEqual(utils_module._vosk_language, "en")
 
 
+class TestOcr(unittest.TestCase):
+    def test_no_tesseract_means_no_text(self):
+        with patch.object(utils_module, "TESSERACT", None):
+            self.assertIsNone(utils_module.ocr_image("scan.png"))
+            self.assertEqual(utils_module._ocr_pdf(MagicMock()), "")
+
+    def test_ocr_image_runs_tesseract_and_drops_noise(self):
+        utils_module._ocr_langs.cache_clear()
+        self.addCleanup(utils_module._ocr_langs.cache_clear)
+        langs = MagicMock(stdout="List of available languages (3):\neng\npor\nosd\n")
+        with patch.object(utils_module, "TESSERACT", "/usr/bin/tesseract"), \
+             patch.object(utils_module.subprocess, "run", side_effect=[langs, MagicMock(stdout=" Nota fiscal eletrônica nº 123 \n")]) as run:
+            self.assertEqual(utils_module.ocr_image("scan.png"), "Nota fiscal eletrônica nº 123")
+        self.assertEqual(run.call_args.args[0], ["/usr/bin/tesseract", "scan.png", "stdout", "-l", "eng+por"])
+        with patch.object(utils_module, "TESSERACT", "/usr/bin/tesseract"), \
+             patch.object(utils_module.subprocess, "run", return_value=MagicMock(stdout="~ |")):
+            self.assertIsNone(utils_module.ocr_image("photo.jpg"))  # a photo, not a document
+
+    def test_scanned_pdf_falls_back_to_ocr_of_page_images(self):
+        page = MagicMock()
+        page.extract_text.return_value = ""
+        page.images = [MagicMock(data=b"jpeg bytes")]
+        page.images[0].name = "Im0.jpg"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "scan.pdf")
+            with open(path, "wb") as f:
+                f.write(b"%PDF-1.4")
+            with patch.object(utils_module, "PdfReader") as reader, \
+                 patch.object(utils_module, "TESSERACT", "/usr/bin/tesseract"), \
+                 patch.object(utils_module, "ocr_image", return_value="Contracheque março") as ocr:
+                reader.return_value.pages = [page]
+                self.assertEqual(read_file(path), "Contracheque março")
+            self.assertTrue(ocr.call_args.args[0].endswith(".jpg"))
+            self.assertEqual(os.listdir(tmp), ["scan.pdf"])  # temp image removed
+
+
+class TestSensitiveKinds(unittest.TestCase):
+    def test_cpf_needs_valid_check_digits(self):
+        self.assertEqual(utils_module.sensitive_kinds("CPF: 529.982.247-25"), {"cpf"})
+        self.assertEqual(utils_module.sensitive_kinds("CPF: 52998224725"), {"cpf"})
+        self.assertEqual(utils_module.sensitive_kinds("CPF: 529.982.247-26"), set())
+        self.assertEqual(utils_module.sensitive_kinds("000.000.000-00"), set())
+
+    def test_card_needs_luhn_and_a_card_network_prefix(self):
+        self.assertEqual(utils_module.sensitive_kinds("cartão 4111 1111 1111 1111"), {"card"})
+        self.assertEqual(utils_module.sensitive_kinds("cartão 4111 1111 1111 1112"), set())
+        self.assertEqual(utils_module.sensitive_kinds("ISBN 978-0-306-40615-7"), set())
+
+    def test_longer_digit_runs_are_not_cards(self):
+        # e.g. a boleto's digitable line: 47 digits in a row
+        self.assertEqual(utils_module.sensitive_kinds("4" * 47), set())
+
+
 if __name__ == '__main__':
     unittest.main()
