@@ -4,7 +4,7 @@ Project identity, and the constraint every item below must respect: **this is a
 local file organizer.** All processing (reading files, embedding, clustering,
 moving files) happens on the user's machine. Nothing about a user's files or
 folder contents gets sent to a server. The only network calls that exist today
-are one-time model downloads (sentence-transformers weights from Hugging Face,
+are one-time model downloads (the embedding model from Hugging Face,
 Vosk language models from alphacephei) that are cached locally after first
 use — that's fine, it stays "local" after that. Any future feature that would
 mean uploading file contents/paths anywhere is out of scope; don't propose it.
