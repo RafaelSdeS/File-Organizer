@@ -6,6 +6,7 @@ import pandas as pd
 from sklearn.metrics import davies_bouldin_score, silhouette_samples, silhouette_score
 import yake
 from sklearn.cluster import KMeans
+from scipy.optimize import linear_sum_assignment  # scipy comes with scikit-learn
 import shutil
 import json
 import fnmatch
@@ -156,7 +157,7 @@ def _center_by_language(embeddings, languages):
     return centered / np.maximum(norms, 1e-12)
 
 
-def _misc_labels(embeddings, labels, centers, z):
+def _misc_labels(embeddings, labels, centers, z, min_files=2):
     """Relabel as -1 (the Misc folder) documents that don't belong anywhere.
 
     KMeans forces every document into some cluster, so a one-off gets glued
@@ -164,7 +165,8 @@ def _misc_labels(embeddings, labels, centers, z):
     - unusually far from its own centroid (distance > mean + z std), or
     - closer, on average, to another cluster than to its own (negative
       silhouette), or
-    - left alone in its cluster - a one-file folder helps nobody.
+    - left in a cluster of fewer than min_files - a one-file folder helps
+      nobody (--min-files raises the bar).
     Measured on the demo: 3 of the 4 one-offs caught (the old distance-only
     rule caught 2), same single false positive; on a real 32-file folder it
     also pulled out exactly the files sitting in the wrong group.
@@ -177,8 +179,32 @@ def _misc_labels(embeddings, labels, centers, z):
         misc |= silhouette_samples(embeddings, labels) < 0
     labels[misc] = -1
     kept, counts = np.unique(labels[labels >= 0], return_counts=True)
-    labels[np.isin(labels, kept[counts < 2])] = -1
+    labels[np.isin(labels, kept[counts < min_files])] = -1
     return labels
+
+
+def _keep_stems_together(folders):
+    """Files sharing a name but not an extension (report.pdf, report.docx)
+    are one document: all of them go to the folder holding most of them
+    (on a tie, the first one that isn't Misc).
+    ponytail: exact stems only; numbered series (lesson01, lesson02) aren't
+    grouped - add when a real folder shows them split."""
+    where = {file: folder for folder, files in folders.items() for file in files}
+    groups = {}
+    for file in where:
+        stem, ext = os.path.splitext(file)
+        if ext:
+            groups.setdefault(stem.lower(), []).append(file)
+    for files in groups.values():
+        votes = Counter(where[file] for file in files)
+        if len(votes) > 1:
+            best = max(votes, key=lambda folder: (votes[folder], folder != MISC_FOLDER))
+            for file in files:
+                where[file] = best
+    result = {}
+    for file, folder in where.items():
+        result.setdefault(folder, []).append(file)
+    return {folder: result[folder] for folder in folders if folder in result}  # same order, none left empty
 
 
 def _folder_name(keywords, taken=()):
@@ -340,7 +366,7 @@ class DocumentAnalyzer:
     #Main class for analyzing and organizing documents using AI-powered clustering.
     #Uses sentence embeddings for content similarity analysis and YAKE for keyword extraction.
 
-    def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, skip_noise=True, exclude_patterns=None, lang="auto", misc_threshold=2.0, use_cache=True, depth=1, llm_names=None):
+    def __init__(self, path_weight=2, max_clusters=10, yake_ngram=2, yake_top=5, skip_noise=True, exclude_patterns=None, lang="auto", misc_threshold=2.0, use_cache=True, depth=1, llm_names=None, min_files=2, spaced_names=False):
         if max_clusters < 3:
             raise ValueError("max_clusters must be at least 3 (k=2 needs to be a testable candidate)")
         self._model = None  # loaded on first use: a fully cached run never needs it
@@ -367,6 +393,8 @@ class DocumentAnalyzer:
         self.use_cache = use_cache
         self.depth = depth
         self.llm_names = llm_names
+        self.min_files = min_files
+        self.spaced_names = spaced_names  # "Solar system" instead of "Solar_system"
         # Filled by analyze_directory / _find_optimal_clusters, for --report.
         self.last_run = None
         self.k_scores = None
@@ -377,7 +405,7 @@ class DocumentAnalyzer:
             self._model = _load_model()
         return self._model
 
-    def analyze_directory(self, path, into=None):
+    def analyze_directory(self, path, into=None, folders=None):
         """
         Analyzes all files in the specified directory and organizes them into clusters.
 
@@ -386,6 +414,12 @@ class DocumentAnalyzer:
             into (str): Optional folder of already-organized subfolders. A
                 document that fits one of them is filed there; the rest are
                 clustered into new folders as usual.
+            folders (int or list): An int makes exactly that many folders (top
+                level; with `into`, new folders) instead of picking the
+                number, with no Misc - two that get the same name still merge.
+                A list of names groups the documents (with `into`, the ones
+                that fit no existing folder) into that many folders and gives
+                each the name nearest it.
 
         Returns:
             dict: {folder name: [file names in path]}; with depth > 1 a
@@ -399,6 +433,9 @@ class DocumentAnalyzer:
         """
         if not isinstance(path, str) or not path.strip():
             raise ValueError("Invalid directory path provided")
+        n_folders, names = (folders, None) if isinstance(folders, int) else (None, folders or None)
+        if n_folders is not None and n_folders < 1:
+            raise ValueError("The number of folders must be at least 1")
 
         try:
             # Verify directory exists and is accessible
@@ -439,7 +476,9 @@ class DocumentAnalyzer:
                             file_data = self._analyze_folder(entry)
 
                         files_data.append(file_data)
-                    
+                        if len(files_data) % 100 == 0:  # progress for --ui on big folders
+                            logger.info(f"Read {len(files_data)} entries...")
+
                     except Exception as e:
                         logger.error(f"Error processing entry {entry.name}: {str(e)}")
                         continue
@@ -476,6 +515,7 @@ class DocumentAnalyzer:
             languages = _detect_languages(texts, self.stopword_sets)
             counts = Counter(lang or "none" for lang in languages.tolist())
             logger.info(f"Detected languages: {dict(counts)}")
+            raw = embeddings[:len(df)]  # folder names (a list in `folders`) are matched against these
             embeddings = _center_by_language(embeddings, languages)
             if self.auto_lang:
                 found = [lang for lang in self.stopword_sets if lang in set(languages)]
@@ -496,16 +536,32 @@ class DocumentAnalyzer:
 
             rest = np.array([folder is None for folder in fits])
             self.k_scores = None
-            if rest.any():
+            if rest.any() and names:
+                # Exactly len(names) clusters, each named by the name nearest its
+                # (uncentred: a bare name has no language group to be centred
+                # with) centre, one name per cluster. On the demo's 8 topics:
+                # ARI 0.89 with Portuguese names and with English ones. Sending
+                # each document to its nearest name instead: 1.00 in English but
+                # 0.75 in Portuguese - uncentred vectors still carry the language.
+                labels = self._cluster(embeddings[rest], len(names))
+                groups = np.unique(labels)
+                centres = np.array([raw[rest][labels == group].mean(axis=0) for group in groups])
+                rows, cols = linear_sum_assignment(-(centres @ self._embed(names).T))
+                files = df["Path"][rest].to_numpy()
+                for row, col in zip(rows, cols):
+                    folders.setdefault(names[col], []).extend(files[labels == groups[row]].tolist())
+            elif rest.any():
                 # A couple of strays don't deserve a new folder next to the user's own.
-                labels = np.full(rest.sum(), -1) if archive and rest.sum() < 3 else self._cluster(embeddings[rest])
+                labels = np.full(rest.sum(), -1) if archive and rest.sum() < 3 else self._cluster(embeddings[rest], n_folders)
                 k_scores = self.k_scores  # sub-clustering (depth > 1) overwrites it
                 started = time.perf_counter()
                 new = self._organize_clusters(df[rest].assign(Cluster=labels), embeddings[rest], self.depth)
                 for folder, files in new.items():
-                    folders.setdefault(folder, []).extend(files)
+                    # Only folders named here: --into's are the user's own.
+                    folders.setdefault(folder.replace("_", " ") if self.spaced_names else folder, []).extend(files)
                 self.k_scores = k_scores
                 logger.info(f"Named folders in {time.perf_counter() - started:.1f}s")
+            folders = _keep_stems_together(folders)
 
             sensitive = {}
             for file, content in zip(df["Path"], df["Content"]):
@@ -517,6 +573,7 @@ class DocumentAnalyzer:
 
             self.last_run = {
                 "paths": df["Path"].tolist(),
+                "texts": df["Text"].tolist(),  # for split_folder's names
                 "embeddings": embeddings,
                 "k_scores": self.k_scores,
                 "scores": _file_scores(df["Path"].tolist(), embeddings, folders, centroids),
@@ -596,15 +653,20 @@ class DocumentAnalyzer:
                 db.close()
         return np.array([vectors[key] for key in keys])
 
-    def _cluster(self, embeddings):
+    def _cluster(self, embeddings, k=None):
         """Cluster labels for the embeddings: pick k, run KMeans, then send
-        the documents that don't belong anywhere to Misc (label -1)."""
-        started = time.perf_counter()
-        try:
-            k = self._find_optimal_clusters(embeddings, max_k=self.max_clusters)
-        except Exception as e:
-            raise RuntimeError(f"Failed to find optimal clusters: {str(e)}")
-        logger.info(f"Picked k={k} in {time.perf_counter() - started:.1f}s")
+        the documents that don't belong anywhere to Misc (label -1). A given
+        k (--folders N) means exactly k folders, so no Misc then."""
+        fixed = bool(k)
+        if fixed:
+            k = min(k, len(embeddings))  # never more folders than documents
+        else:
+            started = time.perf_counter()
+            try:
+                k = self._find_optimal_clusters(embeddings, max_k=self.max_clusters)
+            except Exception as e:
+                raise RuntimeError(f"Failed to find optimal clusters: {str(e)}")
+            logger.info(f"Picked k={k} in {time.perf_counter() - started:.1f}s")
 
         try:
             kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
@@ -612,9 +674,24 @@ class DocumentAnalyzer:
         except Exception as e:
             raise RuntimeError(f"Clustering failed: {str(e)}")
 
-        if self.misc_threshold:
-            labels = _misc_labels(embeddings, labels, kmeans.cluster_centers_, self.misc_threshold)
+        if self.misc_threshold and not fixed:
+            labels = _misc_labels(embeddings, labels, kmeans.cluster_centers_, self.misc_threshold, self.min_files)
         return labels
+
+    def split_folder(self, name, files):
+        """({folder: [files]}, {file: score}) splitting one folder of the last
+        run (the UI's Split) into "name/Child" subfolders; files that fit
+        none stay in `name`, as with --depth."""
+        if len(files) < 4:
+            raise ValueError("A folder needs at least 4 files to be split")
+        index = {path: i for i, path in enumerate(self.last_run["paths"])}
+        rows = [index[file] for file in files]
+        embeddings = self.last_run["embeddings"][rows]
+        df = pd.DataFrame({"Path": files, "Text": [self.last_run["texts"][i] for i in rows]})
+        split = self._organize_clusters(df.assign(Cluster=self._cluster(embeddings)), embeddings, 1, name)
+        if self.spaced_names:  # the children only: `name` is whatever the user typed
+            split = {name + folder[len(name):].replace("_", " "): members for folder, members in split.items()}
+        return split, _file_scores(files, embeddings, split)
 
     def _analyze_folder(self, folder_path):
 
@@ -718,7 +795,7 @@ class DocumentAnalyzer:
         sends to Misc stays in the parent folder itself.
         """
         folder_structure = {}
-        taken = set(re.split(r"[_/]", parent.lower())) if parent else set()
+        taken = set(re.split(r"[_/\s]+", parent.lower())) if parent else set()  # \s: names typed in the UI
         labels = df["Cluster"].to_numpy()
 
         for cluster in pd.unique(labels):

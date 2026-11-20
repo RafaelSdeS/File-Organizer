@@ -189,6 +189,25 @@ Priority order: **Critical** (can silently destroy or lose user data / crash)
 - [x] **Undo cleans up** the emptied cluster folders and the manifest.
 - [x] **Vosk**: models in `~/.cache/vosk` (were re-downloaded after every
       reboot from the temp dir); transcription language follows `--lang`.
+- [x] **Quality of life (2026-11-20)**: `--folders N` (exactly N, no Misc)
+      or `--folders "A, B"` (each document to the nearest name), also a UI
+      field; `--undo last`; `--min-files N`; `--spaced-names`; files sharing
+      a stem stay together; cron example in the README. UI: suggested
+      numbers of folders as buttons, file preview, Split a folder, stage
+      progress, Portuguese for a pt browser.
+- [x] **Measured `--folders "names"` on the demo** (8 topic names vs
+      `examples/demo_topics.tsv`, the 64 topic texts): each document to its
+      nearest name got ARI 1.00 with English names but 0.75 with Portuguese
+      ones (uncentred vectors carry the language); KMeans with k = len(names)
+      + clusters matched to names (`linear_sum_assignment`) got 0.89 (95%
+      under the right name) in both - that's what ships.
+- [ ] **Text cache (skip reading unchanged files)** — measure first: the
+      "Read N entries in Xs" log vs the total on a big folder, second run.
+      It would put a plain-text copy of the documents in `~/.cache` (today
+      only vectors), and naming, CPF flags and language detection all need
+      the text, so it only pays if reading dominates warm runs.
+- Not doing: grouping numbered series (`aula01..aula12`) — no folder has
+  shown them split yet; CLI messages in Portuguese — the README is English.
 
 ## Roadmap: why use this over an LLM-per-file sorter (plan of 2026-11-19)
 

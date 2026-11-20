@@ -11,12 +11,13 @@ import json
 import logging
 import os
 import secrets
+import threading
 import webbrowser
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 
-from .analyzer import organize_files, read_history, undo_organize
-from .plan import validate_folders
+from .analyzer import _read_content, organize_files, read_history, undo_organize
+from .plan import parse_folders, validate_folders
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +26,33 @@ CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline
 MAX_BODY = 10 * 1024 * 1024
 
 
-def make_server(analyzer, path=None, into=None, target_dir=None, copy=False, port=0):
+class _Progress(logging.Handler):
+    """Keeps the package's latest INFO line ("Read 300 entries...") for
+    /api/progress. ponytail: stage-level only; the embedding stage just says
+    "generating embeddings..." - log per batch if that stage feels stuck."""
+
+    def __init__(self, state):
+        super().__init__(logging.INFO)
+        self.state = state
+
+    def emit(self, record):
+        self.state["progress"] = record.getMessage()
+
+
+def make_server(analyzer, path=None, into=None, target_dir=None, copy=False, folders=None, port=0):
     """(server, url). The analyzer (and its model) is loaded once and shared
-    by every request; the server is single-threaded, so requests never overlap."""
+    by every request. Requests get a thread each, so /api/progress answers
+    while an analysis runs, but the POSTs hold a lock: one at a time, never
+    overlapping on the analyzer or the state below."""
     token = secrets.token_urlsafe(24)
     page = (files(__package__) / "ui.html").read_bytes()
-    # The last analysis: /api/apply only ever moves files out of its source.
-    state = {"defaults": {"path": path or "", "into": into or "", "copy": copy}, "source": None, "target": None}
+    folders_text = ", ".join(folders) if isinstance(folders, list) else str(folders or "")
+    # The last analysis: /api/apply only ever moves files out of its source,
+    # and /api/preview and /api/split only take files it listed.
+    state = {"defaults": {"path": path or "", "into": into or "", "copy": copy, "folders": folders_text},
+             "source": None, "target": None, "paths": set(), "progress": ""}
+    lock = threading.Lock()
+    logging.getLogger(__package__).addHandler(_Progress(state))
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
@@ -72,6 +93,8 @@ def make_server(analyzer, path=None, into=None, target_dir=None, copy=False, por
                 return self._send(200, state["defaults"])
             if self.path == "/api/history":
                 return self._send(200, [dict(e, undone=not os.path.exists(e.get("manifest", ""))) for e in read_history()])
+            if self.path == "/api/progress":
+                return self._send(200, {"message": state["progress"]})
             return self._send(404, {"error": "not found"})
 
         def do_POST(self):
@@ -82,10 +105,13 @@ def make_server(analyzer, path=None, into=None, target_dir=None, copy=False, por
                 return self._send(413, {"error": "request too large"})
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
-                handler = {"/api/analyze": self._analyze, "/api/apply": self._apply, "/api/undo": self._undo}.get(self.path)
+                handler = {"/api/analyze": self._analyze, "/api/apply": self._apply, "/api/undo": self._undo,
+                           "/api/preview": self._preview, "/api/split": self._split}.get(self.path)
                 if handler is None:
                     return self._send(404, {"error": "not found"})
-                return self._send(200, handler(body))
+                with lock:
+                    result = handler(body)
+                return self._send(200, result)
             except Exception as e:  # shown on the page; the server keeps running
                 logger.error(f"ui: {self.path} failed: {e}")
                 return self._send(400, {"error": str(e)})
@@ -93,9 +119,12 @@ def make_server(analyzer, path=None, into=None, target_dir=None, copy=False, por
         def _analyze(self, body):
             source = os.path.expanduser(body.get("path", "").strip())
             into = os.path.expanduser(body.get("into", "").strip()) or None
-            folders = analyzer.analyze_directory(source, into=into)
+            state["progress"] = ""
+            folders = analyzer.analyze_directory(source, into=into, folders=parse_folders(body.get("folders")))
             state["source"], state["target"] = source, into or target_dir or source
             last_run = analyzer.last_run
+            state["paths"] = set(last_run["paths"])
+            k_scores = last_run["k_scores"]  # None when the user fixed the folders
             return {
                 "source": os.path.abspath(source),
                 "target": os.path.abspath(state["target"]),
@@ -103,7 +132,28 @@ def make_server(analyzer, path=None, into=None, target_dir=None, copy=False, por
                 "scores": last_run["scores"],
                 "sensitive": last_run["sensitive"],
                 "map": _map_points(last_run["paths"], last_run["embeddings"]),
+                # The chosen k and each metric's own pick (the chosen one is
+                # their median, so not always among them), as buttons.
+                "suggest": k_scores and {"chosen": k_scores["chosen"],
+                                         "options": sorted({k_scores["chosen"], *(k for k in k_scores["votes"].values() if k)})},
             }
+
+        def _known(self, files):
+            if not isinstance(files, list) or not files or not set(files) <= state["paths"]:
+                raise ValueError("Unknown file: analyze the folder again")
+
+        def _preview(self, body):
+            """The start of a file's text - what the analysis read of it."""
+            self._known([body.get("file")])
+            return {"text": (_read_content(os.path.join(state["source"], body["file"])) or "")[:600]}
+
+        def _split(self, body):
+            name = str(body.get("name") or "").strip()
+            if not name:
+                raise ValueError("Which folder?")
+            self._known(body.get("files"))
+            folders, scores = analyzer.split_folder(name, body["files"])
+            return {"folders": folders, "scores": scores}
 
         def _apply(self, body):
             if not state["source"]:
@@ -124,7 +174,7 @@ def make_server(analyzer, path=None, into=None, target_dir=None, copy=False, por
             undo_organize(manifest)
             return {"complete": not os.path.exists(manifest)}
 
-    server = HTTPServer(("127.0.0.1", port), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     return server, f"http://127.0.0.1:{server.server_address[1]}/#{token}"
 
 
@@ -141,8 +191,8 @@ def _map_points(paths, embeddings):
     return [{"file": p, "x": float(x), "y": float(y)} for p, (x, y) in zip(paths, xy)]
 
 
-def serve(analyzer, path=None, into=None, target_dir=None, copy=False):
-    server, url = make_server(analyzer, path=path, into=into, target_dir=target_dir, copy=copy)
+def serve(analyzer, path=None, into=None, target_dir=None, copy=False, folders=None):
+    server, url = make_server(analyzer, path=path, into=into, target_dir=target_dir, copy=copy, folders=folders)
     # flush: piped or logged, stdout is block-buffered and the link (the only
     # way in, it carries the token) would sit unseen while the server runs.
     print(f"File Organizer is open at {url}\n(only on this computer; Ctrl+C to stop)", flush=True)

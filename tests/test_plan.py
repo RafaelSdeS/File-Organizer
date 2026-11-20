@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.document_analyzer.plan import read_plan, validate_folders, write_plan
+from src.document_analyzer.plan import parse_folders, read_plan, validate_folders, write_plan
 
 
 class TestPlan(unittest.TestCase):
@@ -59,6 +59,15 @@ class TestPlan(unittest.TestCase):
         ):
             with self.subTest(folders=folders), self.assertRaises(ValueError):
                 validate_folders(folders, self.source)
+
+    def test_parse_folders(self):
+        self.assertIsNone(parse_folders(""))
+        self.assertIsNone(parse_folders(None))
+        self.assertEqual(parse_folders(" 5 "), 5)
+        self.assertEqual(parse_folders("Finanças, Receitas, Finanças,"), ["Finanças", "Receitas"])
+        for bad in ("0", "../fora", "C:\\x"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                parse_folders(bad)
 
 
 if __name__ == "__main__":

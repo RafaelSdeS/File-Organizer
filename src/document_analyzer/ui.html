@@ -24,7 +24,7 @@
   header, main, footer { max-width: 1200px; margin: 0 auto; padding: 16px; }
   h1 { font-size: 1.35rem; margin: 8px 0 2px; }
   .sub { color: var(--ink-2); margin: 0 0 16px; }
-  form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: end; }
+  form { display: grid; grid-template-columns: 1fr 1fr 12rem auto; gap: 12px; align-items: end; }
   label { display: grid; gap: 4px; font-size: .85rem; color: var(--ink-2); }
   input[type=text], select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; min-width: 0; }
   button { font: inherit; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 7px 14px; cursor: pointer; }
@@ -45,6 +45,11 @@
   li:last-child { border-bottom: 0; }
   .score { font-variant-numeric: tabular-nums; color: var(--muted); font-size: .85rem; }
   .name { overflow-wrap: anywhere; }
+  .name summary { cursor: pointer; }
+  .name pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8rem; max-height: 14em; overflow: auto; background: var(--bg); border-radius: 4px; padding: 6px 8px; margin: 4px 0 0; }
+  .suggest { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; color: var(--ink-2); font-size: .85rem; margin: -4px 0 12px; }
+  .suggest button { padding: 2px 10px; }
+  .suggest button.chosen { border-color: var(--accent); color: var(--accent); }
   .badge { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-size: .75rem; background: var(--warn-soft); color: var(--warn); }
   li select { max-width: 14em; }
   .add { display: flex; gap: 8px; margin: 4px 0 16px; }
@@ -56,8 +61,8 @@
   .dot.misc { fill: var(--surface); stroke: var(--muted); stroke-width: .4; opacity: 1; }
   figcaption { color: var(--ink-2); font-size: .85rem; margin-top: 6px; }
   footer .bar { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
-  details { margin-top: 20px; }
-  summary { cursor: pointer; font-weight: 600; }
+  #history-box { margin-top: 20px; }
+  #history-box summary { cursor: pointer; font-weight: 600; }
   #history li { grid-template-columns: minmax(0, 1fr) auto; }
   .muted { color: var(--muted); }
   [hidden] { display: none !important; }
@@ -72,12 +77,13 @@
 </head>
 <body>
 <header>
-  <h1>File Organizer</h1>
-  <p class="sub">Groups documents by what they're about. Everything runs on this computer.</p>
+  <h1 data-t>File Organizer</h1>
+  <p class="sub" data-t>Groups documents by what they're about. Everything runs on this computer.</p>
   <form id="form">
-    <label>Folder to organize <input type="text" id="path" required placeholder="~/Downloads" autocomplete="off"></label>
-    <label>Into existing folders (optional) <input type="text" id="into" placeholder="~/Documents" autocomplete="off"></label>
-    <button class="primary" id="analyze">Analyze</button>
+    <label><span data-t>Folder to organize</span> <input type="text" id="path" required placeholder="~/Downloads" autocomplete="off"></label>
+    <label><span data-t>Into existing folders (optional)</span> <input type="text" id="into" placeholder="~/Documents" autocomplete="off"></label>
+    <label title="Empty: the analysis picks the number. A number: exactly that many folders. Names separated by commas: those folders."><span data-t>Folders</span> <input type="text" id="n-folders" placeholder="auto · 5 · Finances, Recipes" autocomplete="off"></label>
+    <button class="primary" id="analyze" data-t>Analyze</button>
   </form>
   <p id="status" role="status" aria-live="polite"></p>
 </header>
@@ -85,25 +91,26 @@
 <main id="result" hidden>
   <section aria-label="Proposed folders">
     <p class="summary" id="summary"></p>
+    <p class="suggest" id="suggest" hidden></p>
     <div id="folders"></div>
     <div class="add">
       <input type="text" id="new-folder" aria-label="New folder name" placeholder="New folder name">
-      <button id="add-folder" type="button">Add folder</button>
+      <button id="add-folder" type="button" data-t>Add folder</button>
     </div>
   </section>
   <figure>
     <svg id="map" viewBox="0 0 100 100" role="img" aria-label="Map of the documents"></svg>
-    <figcaption>Each dot is a file, placed by content similarity. Pick a folder (or a dot) to highlight it. Hollow dots are in Misc.</figcaption>
+    <figcaption data-t>Each dot is a file, placed by content similarity. Pick a folder (or a dot) to highlight it. Hollow dots are in Misc.</figcaption>
   </figure>
 </main>
 
 <footer>
   <div class="bar" id="apply-bar" hidden>
-    <label style="display:flex; gap:6px; align-items:center"><input type="checkbox" id="copy"> Copy instead of move</label>
-    <button class="primary" id="apply" type="button">Apply</button>
+    <label style="display:flex; gap:6px; align-items:center"><input type="checkbox" id="copy"> <span data-t>Copy instead of move</span></label>
+    <button class="primary" id="apply" type="button" data-t>Apply</button>
   </div>
   <details id="history-box">
-    <summary>History</summary>
+    <summary data-t>History</summary>
     <ul id="history"></ul>
   </details>
 </footer>
@@ -114,9 +121,72 @@ const token = location.hash.slice(1);
 const $ = (sel) => document.querySelector(sel);
 const LEAVE = "";            // select value: leave the file where it is
 const MISC = "Misc";
-let plan = null;             // {source, target, folders, scores, sensitive, map}
+let plan = null;             // {source, target, folders, scores, sensitive, map, suggest}
 let left = [];               // files the user chose not to move
 let selected = null;         // folder highlighted on the map
+let suggest = null;          // the last automatic run's picks for the number of folders
+const previews = new Map();  // file -> start of its text
+
+// The page speaks Portuguese to a Portuguese browser. Messages that come from
+// the Python side (errors, progress) stay in English.
+const PT = {
+  "File Organizer": "Organizador de Arquivos",
+  "Groups documents by what they're about. Everything runs on this computer.": "Agrupa documentos pelo assunto. Tudo roda neste computador.",
+  "Folder to organize": "Pasta a organizar",
+  "Into existing folders (optional)": "Em pastas que já existem (opcional)",
+  "Folders": "Pastas",
+  "Empty: the analysis picks the number. A number: exactly that many folders. Names separated by commas: those folders.": "Vazio: a análise escolhe o número. Um número: exatamente essa quantidade de pastas. Nomes separados por vírgula: essas pastas.",
+  "auto · 5 · Finances, Recipes": "auto · 5 · Finanças, Receitas",
+  "Analyze": "Analisar",
+  "Proposed folders": "Pastas propostas",
+  "New folder name": "Nome da nova pasta",
+  "Add folder": "Adicionar pasta",
+  "Map of the documents": "Mapa dos documentos",
+  "Each dot is a file, placed by content similarity. Pick a folder (or a dot) to highlight it. Hollow dots are in Misc.": "Cada ponto é um arquivo, posicionado pela semelhança de conteúdo. Escolha uma pasta (ou um ponto) para destacá-la. Pontos vazados estão em Misc.",
+  "Copy instead of move": "Copiar em vez de mover",
+  "Apply": "Aplicar",
+  "History": "Histórico",
+  "Folder name": "Nome da pasta",
+  "Show": "Mostrar",
+  "Hide": "Ocultar",
+  "Split": "Dividir",
+  "Split this folder into subfolders": "Dividir esta pasta em subpastas",
+  "Left where they are": "Ficam onde estão",
+  "(leave where it is)": "(deixar onde está)",
+  "Folder for {file}": "Pasta de {file}",
+  "Similarity to its folder (lowest first)": "Semelhança com a pasta (menores primeiro)",
+  "Contains personal data": "Contém dados pessoais",
+  "{n} file": "{n} arquivo",
+  "{n} files": "{n} arquivos",
+  "{n} files into {f} folders in {dir}": "{n} arquivos em {f} pastas em {dir}",
+  "Number of folders:": "Número de pastas:",
+  "{k} (suggested)": "{k} (sugerido)",
+  "Loading…": "Carregando…",
+  "(no text: grouped by its name only)": "(sem texto: agrupado só pelo nome)",
+  "Analyzing… the first run on a big folder can take a few minutes.": "Analisando… a primeira vez numa pasta grande pode levar alguns minutos.",
+  "Analyzing…": "Analisando…",
+  "Review the folders: rename them, move files with the menus (doubtful files come first), then Apply.": "Revise as pastas: renomeie, mova arquivos pelos menus (os duvidosos vêm primeiro) e clique em Aplicar.",
+  "Splitting {name}…": "Dividindo {name}…",
+  "Split {name} into {n} folders.": "{name} dividida em {n} pastas.",
+  "Copy {n} files into {f} folders in {dir}?": "Copiar {n} arquivos para {f} pastas em {dir}?",
+  "Move {n} files into {f} folders in {dir}?": "Mover {n} arquivos para {f} pastas em {dir}?",
+  "Done. You can undo it from History below.": "Pronto. Dá para desfazer pelo Histórico, abaixo.",
+  "Nothing was moved.": "Nada foi movido.",
+  "No runs yet.": "Nenhuma execução ainda.",
+  "{time} · {n} files copied · {where}": "{time} · {n} arquivos copiados · {where}",
+  "{time} · {n} files moved · {where}": "{time} · {n} arquivos movidos · {where}",
+  "Undo": "Desfazer",
+  "undone": "desfeito",
+  "Put these files back where they were?": "Devolver estes arquivos para onde estavam?",
+  "Undone.": "Desfeito.",
+  "Partly undone: some files were skipped (see the terminal).": "Desfeito em parte: alguns arquivos foram pulados (veja o terminal).",
+  "Open this page with the link the terminal printed (it carries an access token).": "Abra esta página pelo link que o terminal mostrou (ele leva um token de acesso).",
+};
+const PORTUGUESE = (navigator.language || "").toLowerCase().startsWith("pt");
+
+function t(text, vars = {}) {
+  return ((PORTUGUESE && PT[text]) || text).replace(/\{(\w+)\}/g, (_, key) => vars[key]);
+}
 
 async function api(path, body) {
   const res = await fetch(path, {
@@ -176,14 +246,63 @@ function rename(from, to) {
 
 function fileRow(file, current) {
   const score = plan.scores[file];
-  const select = el("select", {"ariaLabel": `Folder for ${file}`, onchange: (e) => move(file, e.target.value)});
+  const select = el("select", {"ariaLabel": t("Folder for {file}", {file}), onchange: (e) => move(file, e.target.value)});
   for (const name of Object.keys(plan.folders)) select.append(el("option", {value: name, textContent: name, selected: name === current}));
-  select.append(el("option", {value: LEAVE, textContent: "(leave where it is)", selected: current === null}));
-  const name = el("span", {class: "name", textContent: file});
-  if (plan.sensitive[file]) name.append(el("span", {class: "badge", textContent: plan.sensitive[file].join(", ").toUpperCase(), title: "Contains personal data"}));
+  select.append(el("option", {value: LEAVE, textContent: t("(leave where it is)"), selected: current === null}));
+  // Opening a file's name shows the start of its text: what the analysis read.
+  const summary = el("summary", {textContent: file});
+  if (plan.sensitive[file]) summary.append(el("span", {class: "badge", textContent: plan.sensitive[file].join(", ").toUpperCase(), title: t("Contains personal data")}));
+  const text = el("pre");
+  const name = el("details", {class: "name", ontoggle: (e) => { if (e.target.open) showPreview(file, text); }}, summary, text);
   return el("li", {},
-    el("span", {class: "score", textContent: score === undefined ? "" : score.toFixed(2), title: "Similarity to its folder (lowest first)"}),
+    el("span", {class: "score", textContent: score === undefined ? "" : score.toFixed(2), title: t("Similarity to its folder (lowest first)")}),
     name, select);
+}
+
+async function showPreview(file, box) {
+  if (!previews.has(file)) {
+    box.textContent = t("Loading…");
+    try {
+      previews.set(file, (await api("/api/preview", {file})).text || t("(no text: grouped by its name only)"));
+    } catch (e) {
+      box.textContent = e.message;
+      return;
+    }
+  }
+  box.textContent = previews.get(file);
+}
+
+async function splitFolder(name) {
+  status(t("Splitting {name}…", {name}));
+  try {
+    const result = await api("/api/split", {name, files: plan.folders[name]});
+    const folders = {};
+    const add = (folder, files) => { folders[folder] = (folders[folder] || []).concat(files); };
+    for (const [folder, files] of Object.entries(plan.folders)) {
+      if (folder === name) for (const [child, members] of Object.entries(result.folders)) add(child, members);  // in the parent's place
+      else add(folder, files);
+    }
+    plan.folders = folders;
+    Object.assign(plan.scores, result.scores);
+    selected = null;
+    render();
+    status(t("Split {name} into {n} folders.", {name, n: Object.keys(result.folders).length}));
+  } catch (e) {
+    status(e.message, true);
+  }
+}
+
+function renderSuggest() {
+  const box = $("#suggest");
+  box.replaceChildren();
+  box.hidden = !suggest;
+  if (!suggest) return;
+  box.append(t("Number of folders:"));
+  for (const k of suggest.options) {
+    box.append(el("button", {type: "button", class: k === suggest.chosen ? "chosen" : "",
+      textContent: k === suggest.chosen ? t("{k} (suggested)", {k}) : String(k),
+      onclick: () => { $("#n-folders").value = k; analyze(); }}));
+  }
 }
 
 function render() {
@@ -191,21 +310,25 @@ function render() {
   box.replaceChildren();
   const byScore = (a, b) => (plan.scores[a] ?? 1) - (plan.scores[b] ?? 1);
   for (const [name, files] of Object.entries(plan.folders)) {
-    const input = el("input", {type: "text", value: name, "ariaLabel": "Folder name", onchange: (e) => rename(name, e.target.value)});
-    const show = el("button", {type: "button", textContent: name === selected ? "Hide" : "Show", "ariaPressed": String(name === selected),
+    const input = el("input", {type: "text", value: name, "ariaLabel": t("Folder name"), onchange: (e) => rename(name, e.target.value)});
+    const show = el("button", {type: "button", textContent: t(name === selected ? "Hide" : "Show"), "ariaPressed": String(name === selected),
       onclick: () => { selected = name === selected ? null : name; render(); }});
+    // The server needs 4+ files to find subgroups in.
+    const split = el("button", {type: "button", textContent: t("Split"), title: t("Split this folder into subfolders"),
+      disabled: files.length < 4, onclick: () => splitFolder(name)});
     box.append(el("section", {class: "folder" + (name === selected ? " selected" : "")},
-      el("div", {class: "folder-head"}, input, el("span", {class: "count", textContent: `${files.length} file${files.length === 1 ? "" : "s"}`}), show),
+      el("div", {class: "folder-head"}, input, el("span", {class: "count", textContent: t(files.length === 1 ? "{n} file" : "{n} files", {n: files.length})}), split, show),
       el("ul", {}, ...[...files].sort(byScore).map((f) => fileRow(f, name)))));
   }
   if (left.length) {
     box.append(el("section", {class: "folder"},
-      el("div", {class: "folder-head"}, el("strong", {textContent: "Left where they are"}), el("span", {class: "count", textContent: String(left.length)})),
+      el("div", {class: "folder-head"}, el("strong", {textContent: t("Left where they are")}), el("span", {class: "count", textContent: String(left.length)})),
       el("ul", {}, ...left.map((f) => fileRow(f, null)))));
   }
   const moved = Object.values(plan.folders).reduce((n, files) => n + files.length, 0);
   const used = Object.values(plan.folders).filter((files) => files.length).length;
-  $("#summary").textContent = `${moved} files into ${used} folders in ${plan.target}`;
+  $("#summary").textContent = t("{n} files into {f} folders in {dir}", {n: moved, f: used, dir: plan.target});
+  renderSuggest();
   drawMap();
 }
 
@@ -220,7 +343,7 @@ function drawMap() {
     dot.setAttribute("r", 1.5);
     dot.setAttribute("class", "dot" + (folder === MISC ? " misc" : "") + (folder && folder === selected ? " on" : ""));
     const title = document.createElementNS(svg.namespaceURI, "title");
-    title.textContent = `${point.file} → ${folder ?? "(left where it is)"}`;
+    title.textContent = `${point.file} → ${folder ?? t("(leave where it is)")}`;
     dot.append(title);
     dot.addEventListener("click", () => { selected = folder; render(); });
     svg.append(dot);
@@ -232,16 +355,25 @@ async function analyze() {
   const button = $("#analyze");
   button.disabled = true;
   $("#result").setAttribute("aria-busy", "true");
-  status("Analyzing… the first run on a big folder can take a few minutes.");
+  status(t("Analyzing… the first run on a big folder can take a few minutes."));
+  // The server says which stage it is in; stop listening as soon as it answers.
+  let running = true;
+  const poll = setInterval(async () => {
+    const progress = await api("/api/progress").catch(() => null);
+    if (running && progress && progress.message) status(`${t("Analyzing…")} ${progress.message}`);
+  }, 1000);
   try {
-    plan = await api("/api/analyze", {path: $("#path").value, into: $("#into").value});
+    plan = await api("/api/analyze", {path: $("#path").value, into: $("#into").value, folders: $("#n-folders").value})
+      .finally(() => { running = false; clearInterval(poll); });
+    if (plan.suggest) suggest = plan.suggest;  // a fixed number of folders brings none: keep the last
+    previews.clear();
     left = [];
     selected = Object.keys(plan.folders)[0] ?? null;  // so the map shows something at once
     $("#result").hidden = false;
     $("#apply-bar").hidden = false;
     $("#apply").disabled = false;
     render();
-    status("Review the folders: rename them, move files with the menus (doubtful files come first), then Apply.");
+    status(t("Review the folders: rename them, move files with the menus (doubtful files come first), then Apply."));
   } catch (e) {
     status(e.message, true);
   } finally {
@@ -254,11 +386,12 @@ async function apply() {
   const copy = $("#copy").checked;
   const folders = Object.fromEntries(Object.entries(plan.folders).filter(([, files]) => files.length));
   const count = Object.values(folders).reduce((n, files) => n + files.length, 0);
-  if (!confirm(`${copy ? "Copy" : "Move"} ${count} files into ${Object.keys(folders).length} folders in ${plan.target}?`)) return;
+  const question = copy ? "Copy {n} files into {f} folders in {dir}?" : "Move {n} files into {f} folders in {dir}?";
+  if (!confirm(t(question, {n: count, f: Object.keys(folders).length, dir: plan.target}))) return;
   $("#apply").disabled = true;
   try {
     const result = await api("/api/apply", {folders, copy});
-    status(result.manifest ? "Done. You can undo it from History below." : "Nothing was moved.");
+    status(t(result.manifest ? "Done. You can undo it from History below." : "Nothing was moved."));
     loadHistory();
   } catch (e) {
     $("#apply").disabled = false;
@@ -271,12 +404,13 @@ async function loadHistory() {
   list.replaceChildren();
   try {
     const entries = await api("/api/history");
-    if (!entries.length) list.append(el("li", {class: "muted", textContent: "No runs yet."}));
+    if (!entries.length) list.append(el("li", {class: "muted", textContent: t("No runs yet.")}));
     for (const entry of entries) {
       const where = entry.source_dir === entry.target_dir ? entry.source_dir : `${entry.source_dir} → ${entry.target_dir}`;
-      const text = el("span", {class: "name", textContent: `${entry.time} · ${entry.files} files ${entry.copy ? "copied" : "moved"} · ${where}`});
-      const action = entry.undone ? el("span", {class: "muted", textContent: "undone"})
-        : el("button", {type: "button", textContent: "Undo", onclick: () => undo(entry.manifest)});
+      const line = entry.copy ? "{time} · {n} files copied · {where}" : "{time} · {n} files moved · {where}";
+      const text = el("span", {class: "name", textContent: t(line, {time: entry.time, n: entry.files, where})});
+      const action = entry.undone ? el("span", {class: "muted", textContent: t("undone")})
+        : el("button", {type: "button", textContent: t("Undo"), onclick: () => undo(entry.manifest)});
       list.append(el("li", {}, text, action));
     }
   } catch (e) {
@@ -285,10 +419,10 @@ async function loadHistory() {
 }
 
 async function undo(manifest) {
-  if (!confirm("Put these files back where they were?")) return;
+  if (!confirm(t("Put these files back where they were?"))) return;
   try {
     const result = await api("/api/undo", {manifest});
-    status(result.complete ? "Undone." : "Partly undone: some files were skipped (see the terminal).");
+    status(t(result.complete ? "Undone." : "Partly undone: some files were skipped (see the terminal)."));
   } catch (e) {
     status(e.message, true);
   }
@@ -306,12 +440,24 @@ $("#add-folder").addEventListener("click", () => {
 });
 $("#history-box").addEventListener("toggle", (e) => { if (e.target.open) loadHistory(); });
 
+if (PORTUGUESE) {
+  document.documentElement.lang = "pt-BR";
+  document.title = t(document.title);
+  for (const node of document.querySelectorAll("[data-t]")) node.textContent = t(node.textContent);
+  for (const node of document.querySelectorAll("[placeholder], [title], [aria-label]")) {
+    for (const attr of ["placeholder", "title", "aria-label"]) {
+      if (node.hasAttribute(attr)) node.setAttribute(attr, t(node.getAttribute(attr)));
+    }
+  }
+}
+
 (async () => {
-  if (!token) return status("Open this page with the link the terminal printed (it carries an access token).", true);
+  if (!token) return status(t("Open this page with the link the terminal printed (it carries an access token)."), true);
   try {
     const defaults = await api("/api/defaults");
     $("#path").value = defaults.path;
     $("#into").value = defaults.into;
+    $("#n-folders").value = defaults.folders;
     $("#copy").checked = defaults.copy;
     if (defaults.path) analyze();
   } catch (e) {

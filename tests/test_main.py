@@ -14,7 +14,7 @@ from unittest.mock import patch
 from src.document_analyzer import main as main_module
 
 # Analyzer knobs the tests below don't set: --no-cache, --depth, --llm-names.
-NEW_KNOB_DEFAULTS = {"use_cache": True, "depth": 1, "llm_names": None}
+NEW_KNOB_DEFAULTS = {"use_cache": True, "depth": 1, "llm_names": None, "min_files": 2, "spaced_names": False}
 
 
 class TestMainCLI(unittest.TestCase):
@@ -49,6 +49,21 @@ class TestMainCLI(unittest.TestCase):
             self._run(["some/dir", "--dry-run"])
             console.flush()
         self.assertIn(b"? Cluster_one", raw.getvalue())
+
+    def test_folders_flag_takes_a_count_or_names(self):
+        self._run(["some/dir", "--folders", "5", "--dry-run"])
+        self.mock_analyzer.analyze_directory.assert_called_with("some/dir", into=None, folders=5)
+        self._run(["some/dir", "--folders", "Receitas, Faculdade", "--dry-run"])
+        self.mock_analyzer.analyze_directory.assert_called_with("some/dir", into=None, folders=["Receitas", "Faculdade"])
+
+    def test_undo_last_picks_the_newest_run_not_yet_undone(self):
+        manifest = Path(self.tmp_dir.name) / "m.json"
+        manifest.write_text("[]")
+        history = [{"manifest": str(Path(self.tmp_dir.name) / "gone.json")}, {"manifest": str(manifest)}]
+        with patch('src.document_analyzer.main.read_history', return_value=history), \
+                patch('src.document_analyzer.main.undo_organize') as undo:
+            self._run(["--undo", "last"])
+        undo.assert_called_once_with(str(manifest))
 
     def test_dry_run_skips_move(self):
         self._run(["some/dir", "--dry-run"])
@@ -251,7 +266,7 @@ class TestMainCLI(unittest.TestCase):
 
     def test_into_analyzes_against_and_moves_into_existing_folders(self):
         self._run(["some/dir", "-y", "--into", "archive"])
-        self.mock_analyzer.analyze_directory.assert_called_once_with("some/dir", into="archive")
+        self.mock_analyzer.analyze_directory.assert_called_once_with("some/dir", into="archive", folders=None)
         self.mock_analyzer.organize_files.assert_called_once_with({"Cluster_one": ["a.txt"]}, "some/dir", "archive", copy=False)
 
     def test_new_knobs_reach_the_analyzer(self):

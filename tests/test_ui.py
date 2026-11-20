@@ -1,5 +1,6 @@
 import http.client
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -23,7 +24,7 @@ class TestUi(unittest.TestCase):
 
         self.analyzer = MagicMock()
         self.analyzer.analyze_directory.return_value = {"Topic": ["a.txt"]}
-        self.analyzer.last_run = {"paths": ["a.txt"], "embeddings": [[1.0]], "scores": {"a.txt": 1.0}, "sensitive": {}}
+        self.analyzer.last_run = {"paths": ["a.txt"], "embeddings": [[1.0]], "scores": {"a.txt": 1.0}, "sensitive": {}, "k_scores": None}
 
         self.server, url = make_server(self.analyzer, path=self.source)
         self.port = self.server.server_address[1]
@@ -74,12 +75,49 @@ class TestUi(unittest.TestCase):
         status, result = self.request("POST", "/api/analyze", {"path": self.source, "into": ""})
         self.assertEqual(status, 200)
         self.assertEqual(result["folders"], {"Topic": ["a.txt"]})
-        self.analyzer.analyze_directory.assert_called_once_with(self.source, into=None)
+        self.analyzer.analyze_directory.assert_called_once_with(self.source, into=None, folders=None)
 
         with patch("src.document_analyzer.ui.organize_files", return_value="m.json") as organize:
             status, result = self.request("POST", "/api/apply", {"folders": {"Renamed": ["a.txt"], "Empty": []}, "copy": True})
         self.assertEqual((status, result), (200, {"manifest": "m.json"}))
         organize.assert_called_once_with({"Renamed": ["a.txt"]}, self.source, self.source, copy=True)
+
+    def test_analyze_passes_the_folders_field(self):
+        """One text field: a number of folders, or folder names."""
+        self.request("POST", "/api/analyze", {"path": self.source, "folders": "4"})
+        self.analyzer.analyze_directory.assert_called_with(self.source, into=None, folders=4)
+        self.request("POST", "/api/analyze", {"path": self.source, "folders": "Receitas, Faculdade"})
+        self.analyzer.analyze_directory.assert_called_with(self.source, into=None, folders=["Receitas", "Faculdade"])
+        self.assertEqual(self.request("POST", "/api/analyze", {"path": self.source, "folders": "0"})[0], 400)
+
+    def test_analyze_suggests_each_metrics_number_of_folders(self):
+        self.analyzer.last_run["k_scores"] = {"chosen": 4, "votes": {"silhouette": 3, "davies_bouldin": 5, "elbow": None}}
+        result = self.request("POST", "/api/analyze", {"path": self.source})[1]
+        self.assertEqual(result["suggest"], {"chosen": 4, "options": [3, 4, 5]})
+
+    def test_preview_only_reads_files_from_the_last_analysis(self):
+        with open(os.path.join(self.source, "a.txt"), "w") as f:
+            f.write("feijoada recipe")
+        self.assertEqual(self.request("POST", "/api/preview", {"file": "a.txt"})[0], 400)  # nothing analyzed yet
+        self.request("POST", "/api/analyze", {"path": self.source})
+        self.assertEqual(self.request("POST", "/api/preview", {"file": "a.txt"}), (200, {"text": "feijoada recipe"}))
+        self.assertEqual(self.request("POST", "/api/preview", {"file": "../a.txt"})[0], 400)
+
+    def test_split_only_takes_files_from_the_last_analysis(self):
+        self.analyzer.split_folder.return_value = ({"Topic/Sub": ["a.txt"]}, {"a.txt": 0.9})
+        self.request("POST", "/api/analyze", {"path": self.source})
+        status, result = self.request("POST", "/api/split", {"name": "Topic", "files": ["a.txt"]})
+        self.assertEqual((status, result), (200, {"folders": {"Topic/Sub": ["a.txt"]}, "scores": {"a.txt": 0.9}}))
+        self.analyzer.split_folder.assert_called_once_with("Topic", ["a.txt"])
+        self.assertEqual(self.request("POST", "/api/split", {"name": "Topic", "files": ["b.txt"]})[0], 400)
+
+    def test_progress_reports_the_latest_log_line(self):
+        package = logging.getLogger("src.document_analyzer")
+        package.setLevel(logging.INFO)
+        self.addCleanup(package.setLevel, logging.NOTSET)
+        logging.getLogger("src.document_analyzer.analyzer").info("Read 100 entries...")
+        self.assertEqual(self.request("GET", "/api/progress"), (200, {"message": "Read 100 entries..."}))
+        self.assertEqual(self.request("GET", "/api/progress", token=False)[0], 403)
 
     def test_apply_validates_user_edits(self):
         self.request("POST", "/api/analyze", {"path": self.source})

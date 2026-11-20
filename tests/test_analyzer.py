@@ -17,7 +17,7 @@ import pandas as pd
 import numpy as np
 import io
 import json
-from src.document_analyzer.analyzer import DocumentAnalyzer, read_history, undo_organize, _center_by_language, _detect_languages, _elbow_k, _file_scores, _folder_name, _llm_folder_name, _load_model, _misc_labels, _read_content, _stopwords, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES, MISC_FOLDER, AUTO_LANGS, EMBEDDING_MODEL, EMBEDDING_REVISION
+from src.document_analyzer.analyzer import DocumentAnalyzer, read_history, undo_organize, _center_by_language, _detect_languages, _elbow_k, _file_scores, _folder_name, _keep_stems_together, _llm_folder_name, _load_model, _misc_labels, _read_content, _stopwords, ORGANIZED_MARKER, DEFAULT_SKIP_NAMES, MISC_FOLDER, AUTO_LANGS, EMBEDDING_MODEL, EMBEDDING_REVISION
 from src.document_analyzer.utils import read_file, create_weighted_text
 
 class TestDocumentAnalyzer(unittest.TestCase):
@@ -372,6 +372,80 @@ class TestDocumentAnalyzer(unittest.TestCase):
         labels = np.array([0, 0, 1])
         centers = np.array([[0, 0.5], [10, 10]])
         self.assertEqual(_misc_labels(emb, labels, centers, z=100).tolist(), [0, 0, -1])
+
+    def _analyze_docs(self, name, count, **kwargs):
+        """analyze_directory on `count` one-line .txt files in a scratch dir."""
+        test_dir = Path(name)
+        try:
+            test_dir.mkdir(exist_ok=True)
+            for i in range(count):
+                (test_dir / f"doc{i:02d}.txt").write_text("x")
+            return self.analyzer.analyze_directory(str(test_dir), **kwargs)
+        finally:
+            shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_a_folder_count_is_used_as_is_with_no_misc(self):
+        """3 obvious groups and an outlier, 2 folders asked: exactly 2."""
+        rng = np.random.default_rng(0)
+        groups = [rng.normal(loc=c, scale=0.01, size=(5, 2)) for c in ((0, 0), (100, 0), (0, 100))]
+        self.mock_model.encode.return_value = np.vstack(groups + [np.array([[6.0, 0.0]])])
+        self.mock_kw_extractor.extract_keywords.side_effect = [[("alpha", 0.5)], [("beta", 0.5)]]
+        with patch.object(self.analyzer, "_find_optimal_clusters") as pick:
+            result = self._analyze_docs("test_n_folders_directory", 16, folders=2)
+        pick.assert_not_called()
+        self.assertEqual(sorted(result), ["Alpha", "Beta"])
+        with self.assertRaises(ValueError):
+            self._analyze_docs("test_n_folders_directory", 2, folders=0)
+
+    def test_folder_names_name_one_cluster_each(self):
+        docs = np.array([[1.0, 0.0], [0.9, 0.1], [0.0, 1.0], [0.1, 0.9]])
+        names = np.array([[1.0, 0.0], [0.0, 1.0]])
+        self.mock_model.encode.side_effect = [docs, names]  # the documents, then the names
+        result = self._analyze_docs("test_folder_names_directory", 4, folders=["Alpha", "Beta"])
+        paths = self.analyzer.last_run["paths"]
+        self.assertEqual({k: sorted(v) for k, v in result.items()}, {"Alpha": sorted(paths[:2]), "Beta": sorted(paths[2:])})
+        self.mock_kw_extractor.extract_keywords.assert_not_called()  # the user named them
+
+    def test_spaced_names(self):
+        ring = np.array([[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]], dtype=float)
+        self.mock_model.encode.return_value = np.vstack([ring, ring + 100])
+        self.mock_kw_extractor.extract_keywords.side_effect = [[("alpha beta", 0.5)], [("gamma delta", 0.5)]]
+        self.analyzer.spaced_names = True
+        with patch.object(self.analyzer, "_find_optimal_clusters", return_value=2):
+            result = self._analyze_docs("test_spaced_names_directory", 10)
+        self.assertEqual(sorted(result), ["Alpha beta", "Gamma delta"])
+
+    def test_split_folder(self):
+        files = [f"f{i}.txt" for i in range(8)]
+        ring = np.array([[1, 0], [-1, 0], [0, 1], [0, -1]], dtype=float)
+        self.analyzer.last_run = {
+            "paths": files + ["other.txt"],
+            "texts": [f"text {i}" for i in range(9)],
+            "embeddings": np.vstack([ring, ring + 100, [[50.0, 50.0]]]),
+        }
+        self.mock_kw_extractor.extract_keywords.side_effect = [[("alpha", 0.5)], [("beta", 0.5)]]
+        with patch.object(self.analyzer, "_find_optimal_clusters", return_value=2):
+            folders, scores = self.analyzer.split_folder("Parent", files)
+        self.assertEqual(sorted(folders), ["Parent/Alpha", "Parent/Beta"])
+        self.assertEqual(sorted(sum(folders.values(), [])), files)
+        self.assertEqual(sorted(scores), files)
+        with self.assertRaises(ValueError):
+            self.analyzer.split_folder("Parent", files[:3])
+
+    def test_min_files_sends_small_clusters_to_misc(self):
+        emb = np.array([[0, 0], [0, 1], [1, 0], [10, 10], [10, 11], [11, 10], [20, 0], [20, 1]], dtype=float)
+        labels = np.array([0, 0, 0, 1, 1, 1, 2, 2])
+        centers = np.array([emb[labels == c].mean(axis=0) for c in (0, 1, 2)])
+        self.assertEqual(_misc_labels(emb, labels, centers, z=100).tolist(), labels.tolist())
+        self.assertEqual(_misc_labels(emb, labels, centers, z=100, min_files=3).tolist(), [0, 0, 0, 1, 1, 1, -1, -1])
+
+    def test_files_sharing_a_name_stay_together(self):
+        folders = {"A": ["r.pdf", "x.txt"], "B": ["r.docx", "r.md"], MISC_FOLDER: ["s.txt"], "C": ["s.pdf", "q.txt"], "D": ["q.md"]}
+        self.assertEqual(_keep_stems_together(folders), {
+            "A": ["x.txt"],
+            "B": ["r.pdf", "r.docx", "r.md"],  # 2 of the 3 were there
+            "C": ["s.txt", "s.pdf", "q.txt", "q.md"],  # ties: not Misc, then the first
+        })
 
     def test_misc_threshold_zero_disables_misc(self):
         self.analyzer.misc_threshold = 0

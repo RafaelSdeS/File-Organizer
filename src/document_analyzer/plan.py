@@ -76,6 +76,21 @@ def validate_folders(folders, source):
                 raise ValueError(f"{name!r} is not in {source}")
 
 
+def parse_folders(text):
+    """--folders / the UI's Folders field: "" -> None (pick the number),
+    "5" -> 5 folders, "Finanças, Receitas" -> those folder names."""
+    text = str(text or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        if int(text) < 1:
+            raise ValueError("The number of folders must be at least 1")
+        return int(text)
+    names = list(dict.fromkeys(name.strip() for name in text.split(",") if name.strip()))
+    validate_folders({name: [] for name in names}, "")  # typed by the user: same rules as a plan
+    return names
+
+
 def _is_number(text):
     try:
         float(text)

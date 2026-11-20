@@ -104,7 +104,7 @@ organize-files --undo ~/Downloads/.file_organizer_manifest_<timestamp>.json
 | `-y, --yes` | Skip the confirmation prompt |
 | `--target-dir DIR` | Put the organized folders here instead of in place |
 | `--copy` | Copy instead of move; originals stay where they are |
-| `--undo MANIFEST` | Revert a previous run. Moved files go back, copies are deleted (never the last copy), and the emptied folders and the manifest are removed |
+| `--undo MANIFEST` | Revert a previous run (`--undo last`: the newest one not yet undone). Moved files go back, copies are deleted (never the last copy), and the emptied folders and the manifest are removed |
 | `--history` | List past runs, newest first, with the command to undo each one (kept in `~/.local/state/file-organizer/history.jsonl`) |
 | `--ui` | Open a page in your browser to analyze, review, edit and apply (see below) |
 | `--into DIR` | File documents into the subfolders `DIR` already has, when they fit; the rest get new folders in `DIR` |
@@ -115,6 +115,10 @@ organize-files --undo ~/Downloads/.file_organizer_manifest_<timestamp>.json
 | `--report DIR` | Save the three charts above for this run (needs `[viz]`) |
 | `--misc-threshold N` | Send to `Misc` documents more than mean + N std from their cluster centre, closer to another cluster, or alone in one; `0` disables `Misc` (default `2.0`) |
 | `--max-clusters N` | Largest k to consider (default `10`) |
+| `--folders N` | Make exactly N folders instead of picking k, with no `Misc` (with `--into`: N new folders). Also a field in `--ui` |
+| `--folders "A, B, C"` | Use these folders: the documents (with `--into`, those that fit none of your folders) are grouped into that many, and each group gets the name nearest it |
+| `--min-files N` | Send to `Misc` the files of folders smaller than N (default `2`: no one-file folders) |
+| `--spaced-names` | `Solar system` instead of `Solar_system` for the folders it names |
 | `--path-weight N` | Times the filename is repeated before the content (default `2`) |
 | `--keyword-ngram N` / `--keyword-count N` | YAKE keyword length / how many to extract; the top 2 name the folder (defaults `2` / `5`) |
 | `--exclude PATTERN` | Glob to skip, repeatable (`--exclude '*.log'`) |
@@ -128,13 +132,19 @@ organize-files --undo ~/Downloads/.file_organizer_manifest_<timestamp>.json
 
 ### The page: `--ui`
 
-`organize-files --ui` (or `organize-files ~/Downloads --ui` to start analyzing right away) opens a page in your browser. Type a folder (and optionally an `--into` folder), and the proposal comes back with each file's similarity to its folder, lowest first, since those are the ones to check. Rename folders, move files between them with the menu next to each file, add folders, see the document map, then Apply. History lists past runs with an Undo button.
+`organize-files --ui` (or `organize-files ~/Downloads --ui` to start analyzing right away) opens a page in your browser. Type a folder (and optionally an `--into` folder, and a number of folders or their names), and the proposal comes back with each file's similarity to its folder, lowest first, since those are the ones to check. Open a file's name to see the start of its text. Rename folders, move files between them with the menu next to each file, add folders, split one into subfolders, try another of the suggested numbers of folders, see the document map, then Apply. History lists past runs with an Undo button. While it analyzes, the page shows which stage it is in, and it speaks Portuguese to a Portuguese browser.
 
 The page is served by Python's standard library on 127.0.0.1 only. It's one HTML file that loads nothing from anywhere, and the server's Content-Security-Policy forbids it. Each run gets a fresh access token (in the link the terminal prints), and requests naming another host are refused.
 
 ### Your own folders: `--into`
 
-`organize-files ~/Downloads --into ~/Documents` files each new document into the existing subfolder of `~/Documents` it resembles. "Resembles" means it is no farther from that folder's average than that folder's own files usually are (the same rule, and `--misc-threshold`, as `Misc`). Documents that fit nowhere get new folders, as usual. Your folders are the training data: move a misfiled document by hand, and the next run takes that into account. To run it regularly, a cron job or systemd timer with `-y` is enough. In a test that took 10 files out of an organized demo, 9 went back to their folder; the tenth came from a folder left with a single file and went to `Misc`.
+`organize-files ~/Downloads --into ~/Documents` files each new document into the existing subfolder of `~/Documents` it resembles. "Resembles" means it is no farther from that folder's average than that folder's own files usually are (the same rule, and `--misc-threshold`, as `Misc`). Documents that fit nowhere get new folders, as usual. Your folders are the training data: move a misfiled document by hand, and the next run takes that into account. To run it regularly, a cron job is enough (`crontab -e`), and `organize-files --undo last` reverts the latest run:
+
+```
+0 9 * * * organize-files ~/Downloads --into ~/Documents -y --quiet
+```
+
+In a test that took 10 files out of an organized demo, 9 went back to their folder; the tenth came from a folder left with a single file and went to `Misc`.
 
 ### Editing the plan
 

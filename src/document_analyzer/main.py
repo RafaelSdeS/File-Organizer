@@ -6,7 +6,7 @@ import tomllib
 from pathlib import Path
 
 from .analyzer import DocumentAnalyzer, organize_files, read_history, undo_organize
-from .plan import read_plan, validate_folders, write_plan
+from .plan import parse_folders, read_plan, validate_folders, write_plan
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +56,16 @@ def parse_args():
     parser.add_argument("-y", "--yes", action="store_true", help="Move files without confirmation prompt")
     parser.add_argument("--path-weight", type=int, default=config.get("path_weight", 2), help="How many times the filename is repeated when weighting embeddings (default: 2)")
     parser.add_argument("--max-clusters", type=int, default=config.get("max_clusters", 10), help="Upper bound on the number of clusters to consider (default: 10)")
+    parser.add_argument("--folders", type=parse_folders, metavar="N|NAMES", default=config.get("folders"), help="Exactly N folders instead of picking the number (no Misc), or a comma-separated list of folder names ('Finances, Classes, Recipes') to file every document into the one it resembles most")
+    parser.add_argument("--min-files", type=int, default=config.get("min_files", 2), help="Folders with fewer files than this go to Misc instead (default: 2)")
+    parser.add_argument("--spaced-names", action="store_true", default=config.get("spaced_names", False), help="Name new folders with spaces ('Solar system') instead of underscores ('Solar_system')")
     parser.add_argument("--keyword-ngram", type=int, default=config.get("keyword_ngram", 2), help="Max n-gram size for YAKE keyword extraction (default: 2)")
     parser.add_argument("--keyword-count", type=int, default=config.get("keyword_count", 5), help="Number of keywords YAKE extracts per cluster, top 2 are used for folder names (default: 5)")
     parser.add_argument("--lang", default=config.get("lang", "auto"), help="Language(s) of your documents: 'auto' (default) detects each file's among en/pt/es/fr/de/it/nl; or a comma-separated list such as 'pt' or 'pt,en' to restrict it. Picks the stopwords for folder names, centres embeddings per language, and sets the audio transcription language (English under auto)")
     parser.add_argument("--misc-threshold", type=float, default=config.get("misc_threshold", 2.0), help="Send to a 'Misc' folder documents farther than mean + N std from their cluster centre, closer to another cluster than their own, or left alone in a cluster; 0 disables Misc (default: 2.0)")
     parser.add_argument("--copy", action="store_true", default=config.get("copy", False), help="Copy files into the organized folders instead of moving them (originals stay put)")
     parser.add_argument("--report", metavar="DIR", help="Save charts of this run (document map, cluster-count selection, similarity heatmap) as PNGs in DIR; needs matplotlib")
-    parser.add_argument("--undo", metavar="MANIFEST", help="Undo a previous run using its manifest JSON file, moving files back to where they started")
+    parser.add_argument("--undo", metavar="MANIFEST", help="Undo a previous run using its manifest JSON file ('last' for the latest run not yet undone), moving files back to where they started")
     parser.add_argument("--plan", metavar="FILE", help="Write the proposed folders to FILE as editable text instead of moving anything (implies --dry-run); then edit it and run --apply FILE")
     parser.add_argument("--apply", metavar="FILE", help="Organize as written in a plan file from --plan (no analysis, no model load)")
     parser.add_argument("--ui", action="store_true", help="Open a local page in your browser to analyze, review, edit and apply (served on 127.0.0.1 only)")
@@ -95,6 +98,11 @@ def main():
         return 0
 
     if args.undo:
+        if args.undo == "last":
+            args.undo = next((e["manifest"] for e in read_history() if os.path.exists(e["manifest"])), None)
+            if not args.undo:
+                logger.error("Nothing to undo: every recorded run is already undone")
+                return 1
         try:
             undo_organize(args.undo)
         except Exception as e:
@@ -124,6 +132,8 @@ def main():
             use_cache=not args.no_cache,
             depth=args.depth,
             llm_names=args.llm_names,
+            min_files=args.min_files,
+            spaced_names=args.spaced_names,
         )
     except Exception as e:
         logger.error(f"Failed to initialize analyzer: {e}")
@@ -131,11 +141,11 @@ def main():
 
     if args.ui:
         from .ui import serve
-        serve(analyzer, path=path, into=args.into, target_dir=args.target_dir, copy=args.copy)
+        serve(analyzer, path=path, into=args.into, target_dir=args.target_dir, copy=args.copy, folders=args.folders)
         return 0
 
     try:
-        folder_structure = analyzer.analyze_directory(path, into=args.into)
+        folder_structure = analyzer.analyze_directory(path, into=args.into, folders=args.folders)
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
         return 1
